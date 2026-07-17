@@ -1,0 +1,10 @@
+CreateFileA
+WriteFile
+RegOpenKeyExA
+RegSetValueExA
+CreateProcessA
+VirtualAlloc
+InternetOpenA
+LoadLibraryA
+GetProcAddress
+UnknownApiExample

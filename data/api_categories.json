@@ -1,0 +1,48 @@
+{
+  "CreateFileA": "File System",
+  "CreateFileW": "File System",
+  "ReadFile": "File System",
+  "WriteFile": "File System",
+  "DeleteFileA": "File System",
+  "DeleteFileW": "File System",
+
+  "RegOpenKeyExA": "Registry",
+  "RegOpenKeyExW": "Registry",
+  "RegQueryValueExA": "Registry",
+  "RegQueryValueExW": "Registry",
+  "RegSetValueExA": "Registry",
+  "RegSetValueExW": "Registry",
+  "RegCreateKeyExA": "Registry",
+  "RegCreateKeyExW": "Registry",
+
+  "CreateProcessA": "Process",
+  "CreateProcessW": "Process",
+  "OpenProcess": "Process",
+  "GetCurrentProcess": "Process",
+  "TerminateProcess": "Process",
+  "GetExitCodeProcess": "Process",
+
+  "VirtualAlloc": "Memory",
+  "VirtualProtect": "Memory",
+  "HeapAlloc": "Memory",
+  "GetProcessHeap": "Memory",
+  "RtlMoveMemory": "Memory",
+
+  "InternetOpenA": "Network",
+  "InternetOpenW": "Network",
+  "InternetOpenUrlA": "Network",
+  "InternetOpenUrlW": "Network",
+  "InternetReadFile": "Network",
+  "HttpOpenRequestA": "Network",
+  "HttpOpenRequestW": "Network",
+  "HttpSendRequestA": "Network",
+  "HttpSendRequestW": "Network",
+  "WSAStartup": "Network",
+
+  "LoadLibraryA": "DLL Loading",
+  "LoadLibraryW": "DLL Loading",
+  "GetProcAddress": "DLL Loading",
+  "GetModuleHandleA": "DLL Loading",
+  "GetModuleHandleW": "DLL Loading",
+  "FreeLibrary": "DLL Loading"
+}
