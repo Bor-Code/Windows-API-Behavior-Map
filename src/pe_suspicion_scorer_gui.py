@@ -4,6 +4,7 @@ import subprocess
 import threading
 import tkinter as tk
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
 
@@ -12,6 +13,7 @@ import pefile
 
 MAX_SCORE = 10000
 CATEGORY_BREADTH_WEIGHT = 120
+DEFAULT_SCAN_LIMIT = 50
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATEGORIES_PATH = PROJECT_ROOT / "data" / "api_categories.json"
 SCANNABLE_PE_EXTENSIONS = {".exe", ".dll", ".scr"}
@@ -299,15 +301,23 @@ def find_pe_files(folder_path: Path) -> list[Path]:
 
 def build_batch_report(
     folder_path: Path,
+    discovered_count: int,
+    scan_limit: int,
     results: list[AnalysisResult],
     failures: list[tuple[Path, str]],
 ) -> str:
     lines: list[str] = []
     sorted_results = sorted(results, key=lambda result: result.score, reverse=True)
 
+    attempted_count = len(results) + len(failures)
+    skipped_by_limit = max(discovered_count - attempted_count, 0)
+
     lines.append(f"Selected Folder: {folder_path}")
-    lines.append(f"Scanned PE Files: {len(results)}")
+    lines.append(f"Discovered PE Files: {discovered_count}")
+    lines.append(f"Analyzed PE Files: {len(results)}")
     lines.append(f"Failed Files: {len(failures)}")
+    lines.append(f"Scan Limit: {scan_limit}")
+    lines.append(f"Skipped by Limit: {skipped_by_limit}")
 
     if sorted_results:
         top_result = sorted_results[0]
@@ -363,14 +373,16 @@ def analyze_file(selected_path: Path) -> tuple[str, list[AnalysisResult], list[t
 
 def analyze_folder(
     folder_path: Path,
+    scan_limit: int,
 ) -> tuple[str, list[AnalysisResult], list[tuple[Path, str]]]:
     api_categories = load_api_categories(DEFAULT_CATEGORIES_PATH)
     pe_files = find_pe_files(folder_path)
+    selected_pe_files = pe_files[:scan_limit]
 
     results: list[AnalysisResult] = []
     failures: list[tuple[Path, str]] = []
 
-    for pe_path in pe_files:
+    for pe_path in selected_pe_files:
         try:
             results.append(analyze_path_data(pe_path, api_categories))
         except Exception as error:
@@ -378,6 +390,8 @@ def analyze_folder(
 
     report = build_batch_report(
         folder_path=folder_path,
+        discovered_count=len(pe_files),
+        scan_limit=scan_limit,
         results=results,
         failures=failures,
     )
@@ -439,6 +453,56 @@ def write_results_csv(
             )
 
 
+def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
+    return {
+        "file_name": result.analyzed_path.name,
+        "file_path": str(result.analyzed_path),
+        "selected_path": str(result.selected_path),
+        "score": result.score,
+        "priority": result.priority,
+        "detected_categories": result.detected_categories,
+        "mapped_api_count": result.mapped_api_count,
+        "unknown_api_count": result.unknown_api_count,
+        "grouped_apis": result.grouped_apis,
+        "analysis_status": "analyzed",
+    }
+
+
+def write_results_json(
+    json_path: Path,
+    results: list[AnalysisResult],
+    failures: list[tuple[Path, str]],
+) -> None:
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "result_count": len(results),
+        "failure_count": len(failures),
+        "max_score": MAX_SCORE,
+        "safety_note": (
+            "This output is based only on static import table indicators. "
+            "It does not prove malicious behavior by itself."
+        ),
+        "results": [
+            analysis_result_to_dict(result)
+            for result in sorted(results, key=lambda item: item.score, reverse=True)
+        ],
+        "failures": [
+            {
+                "file_name": failed_path.name,
+                "file_path": str(failed_path),
+                "analysis_status": "failed",
+                "error": error_message,
+            }
+            for failed_path, error_message in failures
+        ],
+    }
+
+    json_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 class PEStaticReviewScorerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -448,6 +512,7 @@ class PEStaticReviewScorerApp:
         self.selected_file = tk.StringVar()
         self.selected_folder = tk.StringVar()
         self.status_text = tk.StringVar(value="Ready")
+        self.scan_limit_text = tk.StringVar(value=str(DEFAULT_SCAN_LIMIT))
 
         self.latest_results: list[AnalysisResult] = []
         self.latest_failures: list[tuple[Path, str]] = []
@@ -504,6 +569,24 @@ class PEStaticReviewScorerApp:
         )
         self.browse_folder_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        scan_limit_row = tk.Frame(container)
+        scan_limit_row.pack(fill=tk.X, pady=(8, 0))
+
+        scan_limit_label = tk.Label(
+            scan_limit_row,
+            text="Max files per folder scan",
+            font=("Segoe UI", 10),
+            anchor="w",
+        )
+        scan_limit_label.pack(side=tk.LEFT)
+
+        self.scan_limit_entry = tk.Entry(
+            scan_limit_row,
+            textvariable=self.scan_limit_text,
+            width=8,
+        )
+        self.scan_limit_entry.pack(side=tk.LEFT, padx=(8, 0))
+
         button_row = tk.Frame(container)
         button_row.pack(anchor="w", pady=(12, 8))
 
@@ -535,6 +618,13 @@ class PEStaticReviewScorerApp:
         )
         self.save_csv_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        self.save_json_button = tk.Button(
+            button_row,
+            text="Save JSON",
+            command=self.save_json,
+        )
+        self.save_json_button.pack(side=tk.LEFT, padx=(8, 0))
+
         status_label = tk.Label(
             container,
             textvariable=self.status_text,
@@ -550,15 +640,38 @@ class PEStaticReviewScorerApp:
         )
         self.output.pack(fill=tk.BOTH, expand=True)
 
+    def get_scan_limit(self) -> int | None:
+        scan_limit_text = self.scan_limit_text.get().strip()
+
+        try:
+            scan_limit = int(scan_limit_text)
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid scan limit",
+                "Max files must be a positive number.",
+            )
+            return None
+
+        if scan_limit <= 0:
+            messagebox.showwarning(
+                "Invalid scan limit",
+                "Max files must be greater than zero.",
+            )
+            return None
+
+        return scan_limit
+
     def set_controls_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
 
         self.browse_file_button.config(state=state)
         self.browse_folder_button.config(state=state)
+        self.scan_limit_entry.config(state=state)
         self.analyze_file_button.config(state=state)
         self.analyze_folder_button.config(state=state)
         self.save_report_button.config(state=state)
         self.save_csv_button.config(state=state)
+        self.save_json_button.config(state=state)
 
     def start_analysis(
         self,
@@ -669,9 +782,14 @@ class PEStaticReviewScorerApp:
             messagebox.showerror("Invalid folder", "The selected folder does not exist.")
             return
 
+        scan_limit = self.get_scan_limit()
+
+        if scan_limit is None:
+            return
+
         self.start_analysis(
             status_message="Scanning folder...",
-            analysis_callback=lambda: analyze_folder(selected_folder),
+            analysis_callback=lambda: analyze_folder(selected_folder, scan_limit),
         )
 
     def save_report(self) -> None:
@@ -727,6 +845,34 @@ class PEStaticReviewScorerApp:
         )
 
         messagebox.showinfo("CSV saved", "The CSV results were saved successfully.")
+
+    def save_json(self) -> None:
+        if not self.latest_results and not self.latest_failures:
+            messagebox.showwarning(
+                "No results",
+                "Please analyze a file or folder before saving JSON output.",
+            )
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Save JSON Results",
+            defaultextension=".json",
+            filetypes=[
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not save_path:
+            return
+
+        write_results_json(
+            json_path=Path(save_path),
+            results=self.latest_results,
+            failures=self.latest_failures,
+        )
+
+        messagebox.showinfo("JSON saved", "The JSON results were saved successfully.")
 
 
 def main() -> None:
