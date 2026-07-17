@@ -1,6 +1,7 @@
 import json
 import subprocess
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
 
@@ -9,7 +10,9 @@ import pefile
 
 MAX_SCORE = 10000
 CATEGORY_BREADTH_WEIGHT = 120
-DEFAULT_CATEGORIES_PATH = Path("data/api_categories.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CATEGORIES_PATH = PROJECT_ROOT / "data" / "api_categories.json"
+SCANNABLE_PE_EXTENSIONS = {".exe", ".dll", ".scr"}
 
 API_SIGNAL_WEIGHTS = {
     "CreateFileA": 40,
@@ -63,6 +66,18 @@ COMBINATION_WEIGHTS = {
 }
 
 
+@dataclass
+class AnalysisResult:
+    selected_path: Path
+    analyzed_path: Path
+    grouped_apis: dict[str, list[str]]
+    score: int
+    priority: str
+    mapped_api_count: int
+    unknown_api_count: int
+    detected_categories: list[str]
+
+
 def load_api_categories(categories_path: Path) -> dict[str, str]:
     with categories_path.open("r", encoding="utf-8") as file:
         return json.load(file)
@@ -82,19 +97,19 @@ def resolve_shortcut(shortcut_path: Path) -> Path:
         ),
     ]
 
-    result = subprocess.run(
+    completed_process = subprocess.run(
         command,
         capture_output=True,
         text=True,
         check=True,
     )
 
-    target = result.stdout.strip()
+    target_path = completed_process.stdout.strip()
 
-    if not target:
+    if not target_path:
         raise ValueError("Shortcut target could not be resolved.")
 
-    return Path(target)
+    return Path(target_path)
 
 
 def normalize_selected_path(selected_path: Path) -> Path:
@@ -108,14 +123,20 @@ def extract_imported_apis(pe_path: Path) -> list[str]:
     pe = pefile.PE(str(pe_path))
     imported_apis: list[str] = []
 
-    if not hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
-        return imported_apis
+    try:
+        if not hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
+            return imported_apis
 
-    for import_entry in pe.DIRECTORY_ENTRY_IMPORT:
-        for imported_symbol in import_entry.imports:
-            if imported_symbol.name:
-                api_name = imported_symbol.name.decode("utf-8", errors="ignore")
-                imported_apis.append(api_name)
+        for import_entry in pe.DIRECTORY_ENTRY_IMPORT:
+            for imported_symbol in import_entry.imports:
+                if imported_symbol.name:
+                    api_name = imported_symbol.name.decode(
+                        "utf-8",
+                        errors="ignore",
+                    )
+                    imported_apis.append(api_name)
+    finally:
+        pe.close()
 
     return sorted(set(imported_apis))
 
@@ -137,9 +158,12 @@ def calculate_static_review_score(grouped_apis: dict[str, list[str]]) -> int:
     detected_categories = set(grouped_apis) - {"Unknown"}
     score = len(detected_categories) * CATEGORY_BREADTH_WEIGHT
 
-    for category in detected_categories:
-        for api_name in grouped_apis[category]:
-            score += API_SIGNAL_WEIGHTS.get(api_name, 25)
+    for category, api_names in grouped_apis.items():
+        if category == "Unknown":
+            continue
+
+        for api_name in api_names:
+            score += API_SIGNAL_WEIGHTS.get(api_name, 20)
 
     for category_a, category_b in COMBINATION_WEIGHTS:
         if category_a in detected_categories and category_b in detected_categories:
@@ -167,67 +191,93 @@ def get_category_summary(grouped_apis: dict[str, list[str]]) -> list[str]:
     unknown_api_count = len(grouped_apis.get("Unknown", []))
 
     if known_categories:
-        top_category = max(
-            known_categories,
-            key=lambda category: len(known_categories[category]),
+        top_category, top_apis = max(
+            known_categories.items(),
+            key=lambda item: len(item[1]),
         )
+        top_category_text = f"{top_category} ({len(top_apis)} APIs)"
     else:
-        top_category = "None"
+        top_category_text = "None"
+
+    detected_categories = ", ".join(sorted(known_categories)) or "None"
 
     return [
-        "Category Summary",
-        "----------------",
-        f"Detected mapped categories: {len(known_categories)}",
-        f"Mapped API count: {mapped_api_count}",
-        f"Unknown API count: {unknown_api_count}",
-        f"Top category: {top_category}",
+        f"Detected Categories: {detected_categories}",
+        f"Mapped APIs: {mapped_api_count}",
+        f"Unknown APIs: {unknown_api_count}",
+        f"Top Category: {top_category_text}",
     ]
 
 
-def build_report(
+def analyze_path_data(
     selected_path: Path,
-    analyzed_path: Path,
-    grouped_apis: dict[str, list[str]],
-    score: int,
-) -> str:
+    api_categories: dict[str, str],
+) -> AnalysisResult:
+    analyzed_path = normalize_selected_path(selected_path)
+
+    if not analyzed_path.exists():
+        raise FileNotFoundError(f"Analyzed file does not exist: {analyzed_path}")
+
+    imported_apis = extract_imported_apis(analyzed_path)
+    grouped_apis = group_apis_by_category(imported_apis, api_categories)
+    score = calculate_static_review_score(grouped_apis)
+
+    known_categories = {
+        category: api_names
+        for category, api_names in grouped_apis.items()
+        if category != "Unknown"
+    }
+
+    mapped_api_count = sum(len(api_names) for api_names in known_categories.values())
+    unknown_api_count = len(grouped_apis.get("Unknown", []))
+
+    return AnalysisResult(
+        selected_path=selected_path,
+        analyzed_path=analyzed_path,
+        grouped_apis=grouped_apis,
+        score=score,
+        priority=get_review_priority(score),
+        mapped_api_count=mapped_api_count,
+        unknown_api_count=unknown_api_count,
+        detected_categories=sorted(known_categories),
+    )
+
+
+def build_report(result: AnalysisResult) -> str:
     lines: list[str] = []
 
-    lines.append(f"Selected File: {selected_path}")
-    lines.append(f"Analyzed File: {analyzed_path}")
-    lines.append(f"Static Review Score: {score} / {MAX_SCORE}")
-    lines.append(f"Review Priority: {get_review_priority(score)}")
-    lines.append("")
+    lines.append(f"Selected File: {result.selected_path}")
+    lines.append(f"Analyzed File: {result.analyzed_path}")
+    lines.append(f"Static Review Score: {result.score} / {MAX_SCORE}")
+    lines.append(f"Review Priority: {result.priority}")
 
-    lines.extend(get_category_summary(grouped_apis))
     lines.append("")
+    lines.append("Analysis Summary")
+    lines.append("----------------")
+    lines.extend(get_category_summary(result.grouped_apis))
 
+    lines.append("")
     lines.append("Detected Categories")
     lines.append("-------------------")
 
-    known_categories = [
-        category for category in grouped_apis
-        if category != "Unknown"
-    ]
+    for category, api_names in result.grouped_apis.items():
+        if category == "Unknown":
+            continue
 
-    if not known_categories:
-        lines.append("No mapped behavior categories were detected.")
-
-    for category in known_categories:
         lines.append("")
         lines.append(category)
         lines.append("-" * len(category))
 
-        for api_name in grouped_apis[category]:
+        for api_name in api_names:
             lines.append(f"- {api_name}")
 
-    unknown_apis = grouped_apis.get("Unknown", [])
+    unknown_api_count = len(result.grouped_apis.get("Unknown", []))
 
-    if unknown_apis:
-        lines.append("")
-        lines.append("Unknown APIs")
-        lines.append("------------")
-        lines.append(f"{len(unknown_apis)} imported APIs were not mapped.")
-        lines.append("Unknown APIs are listed for visibility but do not increase the score.")
+    lines.append("")
+    lines.append("Unknown APIs")
+    lines.append("------------")
+    lines.append(f"{unknown_api_count} imported APIs were not mapped.")
+    lines.append("Unknown APIs are listed for visibility but do not increase the score.")
 
     lines.append("")
     lines.append("Analysis Note")
@@ -239,18 +289,95 @@ def build_report(
     return "\n".join(lines)
 
 
-def analyze_file(selected_path: Path) -> str:
-    analyzed_path = normalize_selected_path(selected_path)
-    api_categories = load_api_categories(DEFAULT_CATEGORIES_PATH)
-    imported_apis = extract_imported_apis(analyzed_path)
-    grouped_apis = group_apis_by_category(imported_apis, api_categories)
-    score = calculate_static_review_score(grouped_apis)
+def find_pe_files(folder_path: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in folder_path.rglob("*")
+        if path.is_file() and path.suffix.lower() in SCANNABLE_PE_EXTENSIONS
+    )
 
-    return build_report(
-        selected_path=selected_path,
-        analyzed_path=analyzed_path,
-        grouped_apis=grouped_apis,
-        score=score,
+
+def build_batch_report(
+    folder_path: Path,
+    results: list[AnalysisResult],
+    failures: list[tuple[Path, str]],
+) -> str:
+    lines: list[str] = []
+    sorted_results = sorted(results, key=lambda result: result.score, reverse=True)
+
+    lines.append(f"Selected Folder: {folder_path}")
+    lines.append(f"Scanned PE Files: {len(results)}")
+    lines.append(f"Failed Files: {len(failures)}")
+
+    if sorted_results:
+        top_result = sorted_results[0]
+        lines.append(f"Highest Review Priority File: {top_result.analyzed_path}")
+        lines.append(f"Highest Static Review Score: {top_result.score} / {MAX_SCORE}")
+
+    lines.append("")
+    lines.append("Batch Review Results")
+    lines.append("--------------------")
+
+    if not sorted_results:
+        lines.append("No PE files were analyzed.")
+    else:
+        for index, result in enumerate(sorted_results, start=1):
+            category_text = (
+                ", ".join(result.detected_categories)
+                if result.detected_categories
+                else "None"
+            )
+
+            lines.append("")
+            lines.append(f"{index}. {result.analyzed_path.name}")
+            lines.append(f"   Path: {result.analyzed_path}")
+            lines.append(f"   Static Review Score: {result.score} / {MAX_SCORE}")
+            lines.append(f"   Review Priority: {result.priority}")
+            lines.append(f"   Detected Categories: {category_text}")
+            lines.append(f"   Mapped APIs: {result.mapped_api_count}")
+            lines.append(f"   Unknown APIs: {result.unknown_api_count}")
+
+    if failures:
+        lines.append("")
+        lines.append("Failed Files")
+        lines.append("------------")
+
+        for failed_path, error_message in failures:
+            lines.append(f"- {failed_path}: {error_message}")
+
+    lines.append("")
+    lines.append("Analysis Note")
+    lines.append("-------------")
+    lines.append("This batch report is based only on static import table indicators.")
+    lines.append("It does not prove malicious behavior by itself.")
+    lines.append("The score only shows which files may deserve more manual review.")
+
+    return "\n".join(lines)
+
+
+def analyze_file(selected_path: Path) -> str:
+    api_categories = load_api_categories(DEFAULT_CATEGORIES_PATH)
+    result = analyze_path_data(selected_path, api_categories)
+    return build_report(result)
+
+
+def analyze_folder(folder_path: Path) -> str:
+    api_categories = load_api_categories(DEFAULT_CATEGORIES_PATH)
+    pe_files = find_pe_files(folder_path)
+
+    results: list[AnalysisResult] = []
+    failures: list[tuple[Path, str]] = []
+
+    for pe_path in pe_files:
+        try:
+            results.append(analyze_path_data(pe_path, api_categories))
+        except Exception as error:
+            failures.append((pe_path, str(error)))
+
+    return build_batch_report(
+        folder_path=folder_path,
+        results=results,
+        failures=failures,
     )
 
 
@@ -261,7 +388,7 @@ class PEStaticReviewScorerApp:
         self.root.geometry("960x720")
 
         self.selected_file = tk.StringVar()
-        self.current_report = ""
+        self.selected_folder = tk.StringVar()
 
         self.build_layout()
 
@@ -269,21 +396,24 @@ class PEStaticReviewScorerApp:
         container = tk.Frame(self.root, padx=16, pady=16)
         container.pack(fill=tk.BOTH, expand=True)
 
-        title = tk.Label(
+        title_label = tk.Label(
             container,
             text="PE Static Review Scorer",
             font=("Segoe UI", 18, "bold"),
             anchor="w",
         )
-        title.pack(fill=tk.X)
+        title_label.pack(fill=tk.X)
 
-        description = tk.Label(
+        description_label = tk.Label(
             container,
-            text="Select an executable, DLL, SCR, or shortcut file for static import table review scoring.",
+            text=(
+                "Select an executable, DLL, SCR, shortcut file, or folder "
+                "for static import table review scoring."
+            ),
             font=("Segoe UI", 10),
             anchor="w",
         )
-        description.pack(fill=tk.X, pady=(8, 16))
+        description_label.pack(fill=tk.X, pady=(8, 16))
 
         file_row = tk.Frame(container)
         file_row.pack(fill=tk.X)
@@ -293,10 +423,23 @@ class PEStaticReviewScorerApp:
 
         browse_button = tk.Button(
             file_row,
-            text="Browse",
+            text="Browse File",
             command=self.select_file,
         )
         browse_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        folder_row = tk.Frame(container)
+        folder_row.pack(fill=tk.X, pady=(8, 0))
+
+        folder_entry = tk.Entry(folder_row, textvariable=self.selected_folder)
+        folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        browse_folder_button = tk.Button(
+            folder_row,
+            text="Browse Folder",
+            command=self.select_folder,
+        )
+        browse_folder_button.pack(side=tk.LEFT, padx=(8, 0))
 
         button_row = tk.Frame(container)
         button_row.pack(anchor="w", pady=(12, 16))
@@ -307,6 +450,13 @@ class PEStaticReviewScorerApp:
             command=self.analyze_selected_file,
         )
         analyze_button.pack(side=tk.LEFT)
+
+        analyze_folder_button = tk.Button(
+            button_row,
+            text="Analyze Selected Folder",
+            command=self.analyze_selected_folder,
+        )
+        analyze_folder_button.pack(side=tk.LEFT, padx=(8, 0))
 
         save_button = tk.Button(
             button_row,
@@ -326,7 +476,10 @@ class PEStaticReviewScorerApp:
         file_path = filedialog.askopenfilename(
             title="Select PE File",
             filetypes=[
-                ("Portable Executable files", "*.exe *.dll *.scr"),
+                ("Supported files", "*.exe *.dll *.scr *.lnk"),
+                ("Executable files", "*.exe"),
+                ("DLL files", "*.dll"),
+                ("Screen saver files", "*.scr"),
                 ("Shortcut files", "*.lnk"),
                 ("All files", "*.*"),
             ],
@@ -334,6 +487,14 @@ class PEStaticReviewScorerApp:
 
         if file_path:
             self.selected_file.set(file_path)
+
+    def select_folder(self) -> None:
+        folder_path = filedialog.askdirectory(
+            title="Select Folder to Scan",
+        )
+
+        if folder_path:
+            self.selected_folder.set(folder_path)
 
     def analyze_selected_file(self) -> None:
         selected_path_text = self.selected_file.get().strip()
@@ -345,7 +506,7 @@ class PEStaticReviewScorerApp:
         selected_path = Path(selected_path_text)
 
         if not selected_path.exists():
-            messagebox.showerror("File not found", "The selected file does not exist.")
+            messagebox.showerror("Invalid file", "The selected file does not exist.")
             return
 
         try:
@@ -354,7 +515,28 @@ class PEStaticReviewScorerApp:
             messagebox.showerror("Analysis failed", str(error))
             return
 
-        self.current_report = report
+        self.output.delete("1.0", tk.END)
+        self.output.insert(tk.END, report)
+
+    def analyze_selected_folder(self) -> None:
+        selected_folder_text = self.selected_folder.get().strip()
+
+        if not selected_folder_text:
+            messagebox.showwarning("Missing folder", "Please select a folder first.")
+            return
+
+        selected_folder = Path(selected_folder_text)
+
+        if not selected_folder.exists() or not selected_folder.is_dir():
+            messagebox.showerror("Invalid folder", "The selected folder does not exist.")
+            return
+
+        try:
+            report = analyze_folder(selected_folder)
+        except Exception as error:
+            messagebox.showerror("Batch analysis failed", str(error))
+            return
+
         self.output.delete("1.0", tk.END)
         self.output.insert(tk.END, report)
 
@@ -362,7 +544,10 @@ class PEStaticReviewScorerApp:
         report = self.output.get("1.0", tk.END).strip()
 
         if not report:
-            messagebox.showwarning("No report", "Please analyze a file before saving a report.")
+            messagebox.showwarning(
+                "No report",
+                "Please analyze a file or folder before saving a report.",
+            )
             return
 
         save_path = filedialog.asksaveasfilename(
@@ -384,7 +569,7 @@ class PEStaticReviewScorerApp:
 
 def main() -> None:
     root = tk.Tk()
-    app = PEStaticReviewScorerApp(root)
+    PEStaticReviewScorerApp(root)
     root.mainloop()
 
 
