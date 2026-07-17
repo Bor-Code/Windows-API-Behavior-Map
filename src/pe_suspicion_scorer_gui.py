@@ -1,6 +1,7 @@
 import csv
 import json
 import subprocess
+import threading
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
@@ -446,8 +447,11 @@ class PEStaticReviewScorerApp:
 
         self.selected_file = tk.StringVar()
         self.selected_folder = tk.StringVar()
+        self.status_text = tk.StringVar(value="Ready")
+
         self.latest_results: list[AnalysisResult] = []
         self.latest_failures: list[tuple[Path, str]] = []
+        self.is_analyzing = False
 
         self.build_layout()
 
@@ -480,12 +484,12 @@ class PEStaticReviewScorerApp:
         file_entry = tk.Entry(file_row, textvariable=self.selected_file)
         file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        browse_button = tk.Button(
+        self.browse_file_button = tk.Button(
             file_row,
             text="Browse File",
             command=self.select_file,
         )
-        browse_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.browse_file_button.pack(side=tk.LEFT, padx=(8, 0))
 
         folder_row = tk.Frame(container)
         folder_row.pack(fill=tk.X, pady=(8, 0))
@@ -493,43 +497,51 @@ class PEStaticReviewScorerApp:
         folder_entry = tk.Entry(folder_row, textvariable=self.selected_folder)
         folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        browse_folder_button = tk.Button(
+        self.browse_folder_button = tk.Button(
             folder_row,
             text="Browse Folder",
             command=self.select_folder,
         )
-        browse_folder_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.browse_folder_button.pack(side=tk.LEFT, padx=(8, 0))
 
         button_row = tk.Frame(container)
-        button_row.pack(anchor="w", pady=(12, 16))
+        button_row.pack(anchor="w", pady=(12, 8))
 
-        analyze_button = tk.Button(
+        self.analyze_file_button = tk.Button(
             button_row,
             text="Analyze Selected File",
             command=self.analyze_selected_file,
         )
-        analyze_button.pack(side=tk.LEFT)
+        self.analyze_file_button.pack(side=tk.LEFT)
 
-        analyze_folder_button = tk.Button(
+        self.analyze_folder_button = tk.Button(
             button_row,
             text="Analyze Selected Folder",
             command=self.analyze_selected_folder,
         )
-        analyze_folder_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.analyze_folder_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        save_button = tk.Button(
+        self.save_report_button = tk.Button(
             button_row,
             text="Save Report",
             command=self.save_report,
         )
-        save_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.save_report_button.pack(side=tk.LEFT, padx=(8, 0))
 
-        save_csv_button = tk.Button(
+        self.save_csv_button = tk.Button(
             button_row,
             text="Save CSV",
             command=self.save_csv,
         )
-        save_csv_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.save_csv_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        status_label = tk.Label(
+            container,
+            textvariable=self.status_text,
+            font=("Segoe UI", 10),
+            anchor="w",
+        )
+        status_label.pack(fill=tk.X, pady=(0, 8))
 
         self.output = scrolledtext.ScrolledText(
             container,
@@ -537,6 +549,70 @@ class PEStaticReviewScorerApp:
             font=("Consolas", 10),
         )
         self.output.pack(fill=tk.BOTH, expand=True)
+
+    def set_controls_enabled(self, enabled: bool) -> None:
+        state = tk.NORMAL if enabled else tk.DISABLED
+
+        self.browse_file_button.config(state=state)
+        self.browse_folder_button.config(state=state)
+        self.analyze_file_button.config(state=state)
+        self.analyze_folder_button.config(state=state)
+        self.save_report_button.config(state=state)
+        self.save_csv_button.config(state=state)
+
+    def start_analysis(
+        self,
+        status_message: str,
+        analysis_callback,
+    ) -> None:
+        if self.is_analyzing:
+            return
+
+        self.is_analyzing = True
+        self.status_text.set(status_message)
+        self.set_controls_enabled(False)
+
+        thread = threading.Thread(
+            target=self.run_analysis_worker,
+            args=(analysis_callback,),
+            daemon=True,
+        )
+        thread.start()
+
+    def run_analysis_worker(self, analysis_callback) -> None:
+        try:
+            report, results, failures = analysis_callback()
+        except Exception as error:
+            error_message = str(error)
+            self.root.after(0, lambda: self.finish_analysis_error(error_message))
+            return
+
+        self.root.after(
+            0,
+            lambda: self.finish_analysis_success(report, results, failures),
+        )
+
+    def finish_analysis_success(
+        self,
+        report: str,
+        results: list[AnalysisResult],
+        failures: list[tuple[Path, str]],
+    ) -> None:
+        self.latest_results = results
+        self.latest_failures = failures
+
+        self.output.delete("1.0", tk.END)
+        self.output.insert(tk.END, report)
+
+        self.status_text.set("Analysis complete")
+        self.is_analyzing = False
+        self.set_controls_enabled(True)
+
+    def finish_analysis_error(self, error_message: str) -> None:
+        self.status_text.set("Analysis failed")
+        self.is_analyzing = False
+        self.set_controls_enabled(True)
+        messagebox.showerror("Analysis failed", error_message)
 
     def select_file(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -575,16 +651,10 @@ class PEStaticReviewScorerApp:
             messagebox.showerror("Invalid file", "The selected file does not exist.")
             return
 
-        try:
-            report, results, failures = analyze_file(selected_path)
-        except Exception as error:
-            messagebox.showerror("Analysis failed", str(error))
-            return
-
-        self.latest_results = results
-        self.latest_failures = failures
-        self.output.delete("1.0", tk.END)
-        self.output.insert(tk.END, report)
+        self.start_analysis(
+            status_message="Analyzing selected file...",
+            analysis_callback=lambda: analyze_file(selected_path),
+        )
 
     def analyze_selected_folder(self) -> None:
         selected_folder_text = self.selected_folder.get().strip()
@@ -599,16 +669,10 @@ class PEStaticReviewScorerApp:
             messagebox.showerror("Invalid folder", "The selected folder does not exist.")
             return
 
-        try:
-            report, results, failures = analyze_folder(selected_folder)
-        except Exception as error:
-            messagebox.showerror("Batch analysis failed", str(error))
-            return
-
-        self.latest_results = results
-        self.latest_failures = failures
-        self.output.delete("1.0", tk.END)
-        self.output.insert(tk.END, report)
+        self.start_analysis(
+            status_message="Scanning folder...",
+            analysis_callback=lambda: analyze_folder(selected_folder),
+        )
 
     def save_report(self) -> None:
         report = self.output.get("1.0", tk.END).strip()
