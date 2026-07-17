@@ -156,6 +156,34 @@ def get_review_priority(score: int) -> str:
     return "Low Review Priority"
 
 
+def get_category_summary(grouped_apis: dict[str, list[str]]) -> list[str]:
+    known_categories = {
+        category: api_names
+        for category, api_names in grouped_apis.items()
+        if category != "Unknown"
+    }
+
+    mapped_api_count = sum(len(api_names) for api_names in known_categories.values())
+    unknown_api_count = len(grouped_apis.get("Unknown", []))
+
+    if known_categories:
+        top_category = max(
+            known_categories,
+            key=lambda category: len(known_categories[category]),
+        )
+    else:
+        top_category = "None"
+
+    return [
+        "Category Summary",
+        "----------------",
+        f"Detected mapped categories: {len(known_categories)}",
+        f"Mapped API count: {mapped_api_count}",
+        f"Unknown API count: {unknown_api_count}",
+        f"Top category: {top_category}",
+    ]
+
+
 def build_report(
     selected_path: Path,
     analyzed_path: Path,
@@ -169,6 +197,10 @@ def build_report(
     lines.append(f"Static Review Score: {score} / {MAX_SCORE}")
     lines.append(f"Review Priority: {get_review_priority(score)}")
     lines.append("")
+
+    lines.extend(get_category_summary(grouped_apis))
+    lines.append("")
+
     lines.append("Detected Categories")
     lines.append("-------------------")
 
@@ -222,13 +254,14 @@ def analyze_file(selected_path: Path) -> str:
     )
 
 
-class PESuspicionScorerApp:
+class PEStaticReviewScorerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("PE Static Review Scorer")
         self.root.geometry("960x720")
 
         self.selected_file = tk.StringVar()
+        self.current_report = ""
 
         self.build_layout()
 
@@ -265,12 +298,22 @@ class PESuspicionScorerApp:
         )
         browse_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        button_row = tk.Frame(container)
+        button_row.pack(anchor="w", pady=(12, 16))
+
         analyze_button = tk.Button(
-            container,
+            button_row,
             text="Analyze Selected File",
             command=self.analyze_selected_file,
         )
-        analyze_button.pack(anchor="w", pady=(12, 16))
+        analyze_button.pack(side=tk.LEFT)
+
+        save_button = tk.Button(
+            button_row,
+            text="Save Report",
+            command=self.save_report,
+        )
+        save_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.output = scrolledtext.ScrolledText(
             container,
@@ -311,13 +354,37 @@ class PESuspicionScorerApp:
             messagebox.showerror("Analysis failed", str(error))
             return
 
+        self.current_report = report
         self.output.delete("1.0", tk.END)
         self.output.insert(tk.END, report)
+
+    def save_report(self) -> None:
+        report = self.output.get("1.0", tk.END).strip()
+
+        if not report:
+            messagebox.showwarning("No report", "Please analyze a file before saving a report.")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Save Analysis Report",
+            defaultextension=".txt",
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("Markdown files", "*.md"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not save_path:
+            return
+
+        Path(save_path).write_text(report, encoding="utf-8")
+        messagebox.showinfo("Report saved", "The analysis report was saved successfully.")
 
 
 def main() -> None:
     root = tk.Tk()
-    app = PESuspicionScorerApp(root)
+    app = PEStaticReviewScorerApp(root)
     root.mainloop()
 
 
