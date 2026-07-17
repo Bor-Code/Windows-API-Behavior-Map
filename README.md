@@ -20,14 +20,14 @@ This project documents:
 
 Initial categories:
 
-- File System API
-- Registry API
-- Process API
-- Memory API
-- Network API
-- DLL Loading API
+- [File System API](api-categories/file-system.md)
+- [Registry API](api-categories/registry.md)
+- [Process API](api-categories/process.md)
+- [Memory API](api-categories/memory.md)
+- [Network API](api-categories/network.md)
+- [DLL Loading API](api-categories/dll-loading.md)
 
-The first version focuses on File System API and Registry API notes.
+The current version includes initial notes for the main API behavior categories.
 
 ## Analysis Rule
 
@@ -51,6 +51,10 @@ This single API call is enough to make a final conclusion.
 api-categories/
   file-system.md
   registry.md
+  process.md
+  memory.md
+  network.md
+  dll-loading.md
 
 examples/
   import-table-example.md
@@ -68,13 +72,17 @@ Initial documentation has been added for:
 
 - File System API behavior notes
 - Registry API behavior notes
+- Process API behavior notes
+- Memory API behavior notes
+- Network API behavior notes
+- DLL Loading API behavior notes
 - Import table interpretation example
 
 ## Next Steps
 
 Planned improvements:
 
-- Add Process API behavior notes
-- Add Memory API behavior notes
-- Add Network API behavior notes
-- Add report-friendly behavior summary templates
+- Add behavior summary templates
+- Add more import table interpretation examples
+- Add report-friendly API grouping tables
+- Add references for common Windows DLLs
