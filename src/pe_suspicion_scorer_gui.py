@@ -1,3 +1,4 @@
+import csv
 import json
 import subprocess
 import tkinter as tk
@@ -271,12 +272,10 @@ def build_report(result: AnalysisResult) -> str:
         for api_name in api_names:
             lines.append(f"- {api_name}")
 
-    unknown_api_count = len(result.grouped_apis.get("Unknown", []))
-
     lines.append("")
     lines.append("Unknown APIs")
     lines.append("------------")
-    lines.append(f"{unknown_api_count} imported APIs were not mapped.")
+    lines.append(f"{result.unknown_api_count} imported APIs were not mapped.")
     lines.append("Unknown APIs are listed for visibility but do not increase the score.")
 
     lines.append("")
@@ -355,13 +354,15 @@ def build_batch_report(
     return "\n".join(lines)
 
 
-def analyze_file(selected_path: Path) -> str:
+def analyze_file(selected_path: Path) -> tuple[str, list[AnalysisResult], list[tuple[Path, str]]]:
     api_categories = load_api_categories(DEFAULT_CATEGORIES_PATH)
     result = analyze_path_data(selected_path, api_categories)
-    return build_report(result)
+    return build_report(result), [result], []
 
 
-def analyze_folder(folder_path: Path) -> str:
+def analyze_folder(
+    folder_path: Path,
+) -> tuple[str, list[AnalysisResult], list[tuple[Path, str]]]:
     api_categories = load_api_categories(DEFAULT_CATEGORIES_PATH)
     pe_files = find_pe_files(folder_path)
 
@@ -374,11 +375,67 @@ def analyze_folder(folder_path: Path) -> str:
         except Exception as error:
             failures.append((pe_path, str(error)))
 
-    return build_batch_report(
+    report = build_batch_report(
         folder_path=folder_path,
         results=results,
         failures=failures,
     )
+
+    return report, results, failures
+
+
+def write_results_csv(
+    csv_path: Path,
+    results: list[AnalysisResult],
+    failures: list[tuple[Path, str]],
+) -> None:
+    with csv_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "file_name",
+                "file_path",
+                "score",
+                "priority",
+                "detected_categories",
+                "mapped_api_count",
+                "unknown_api_count",
+                "analysis_status",
+                "error",
+            ],
+        )
+
+        writer.writeheader()
+
+        for result in sorted(results, key=lambda item: item.score, reverse=True):
+            writer.writerow(
+                {
+                    "file_name": result.analyzed_path.name,
+                    "file_path": str(result.analyzed_path),
+                    "score": result.score,
+                    "priority": result.priority,
+                    "detected_categories": "; ".join(result.detected_categories),
+                    "mapped_api_count": result.mapped_api_count,
+                    "unknown_api_count": result.unknown_api_count,
+                    "analysis_status": "analyzed",
+                    "error": "",
+                }
+            )
+
+        for failed_path, error_message in failures:
+            writer.writerow(
+                {
+                    "file_name": failed_path.name,
+                    "file_path": str(failed_path),
+                    "score": "",
+                    "priority": "",
+                    "detected_categories": "",
+                    "mapped_api_count": "",
+                    "unknown_api_count": "",
+                    "analysis_status": "failed",
+                    "error": error_message,
+                }
+            )
 
 
 class PEStaticReviewScorerApp:
@@ -389,6 +446,8 @@ class PEStaticReviewScorerApp:
 
         self.selected_file = tk.StringVar()
         self.selected_folder = tk.StringVar()
+        self.latest_results: list[AnalysisResult] = []
+        self.latest_failures: list[tuple[Path, str]] = []
 
         self.build_layout()
 
@@ -465,6 +524,13 @@ class PEStaticReviewScorerApp:
         )
         save_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        save_csv_button = tk.Button(
+            button_row,
+            text="Save CSV",
+            command=self.save_csv,
+        )
+        save_csv_button.pack(side=tk.LEFT, padx=(8, 0))
+
         self.output = scrolledtext.ScrolledText(
             container,
             wrap=tk.WORD,
@@ -510,11 +576,13 @@ class PEStaticReviewScorerApp:
             return
 
         try:
-            report = analyze_file(selected_path)
+            report, results, failures = analyze_file(selected_path)
         except Exception as error:
             messagebox.showerror("Analysis failed", str(error))
             return
 
+        self.latest_results = results
+        self.latest_failures = failures
         self.output.delete("1.0", tk.END)
         self.output.insert(tk.END, report)
 
@@ -532,11 +600,13 @@ class PEStaticReviewScorerApp:
             return
 
         try:
-            report = analyze_folder(selected_folder)
+            report, results, failures = analyze_folder(selected_folder)
         except Exception as error:
             messagebox.showerror("Batch analysis failed", str(error))
             return
 
+        self.latest_results = results
+        self.latest_failures = failures
         self.output.delete("1.0", tk.END)
         self.output.insert(tk.END, report)
 
@@ -565,6 +635,34 @@ class PEStaticReviewScorerApp:
 
         Path(save_path).write_text(report, encoding="utf-8")
         messagebox.showinfo("Report saved", "The analysis report was saved successfully.")
+
+    def save_csv(self) -> None:
+        if not self.latest_results and not self.latest_failures:
+            messagebox.showwarning(
+                "No results",
+                "Please analyze a file or folder before saving CSV output.",
+            )
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Save CSV Results",
+            defaultextension=".csv",
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not save_path:
+            return
+
+        write_results_csv(
+            csv_path=Path(save_path),
+            results=self.latest_results,
+            failures=self.latest_failures,
+        )
+
+        messagebox.showinfo("CSV saved", "The CSV results were saved successfully.")
 
 
 def main() -> None:
