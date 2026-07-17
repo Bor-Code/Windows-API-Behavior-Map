@@ -156,6 +156,34 @@ def get_review_priority(score: int) -> str:
     return "Low Review Priority"
 
 
+def get_category_summary(grouped_apis: dict[str, list[str]]) -> list[str]:
+    known_categories = {
+        category: api_names
+        for category, api_names in grouped_apis.items()
+        if category != "Unknown"
+    }
+
+    mapped_api_count = sum(len(api_names) for api_names in known_categories.values())
+    unknown_api_count = len(grouped_apis.get("Unknown", []))
+
+    if known_categories:
+        top_category = max(
+            known_categories,
+            key=lambda category: len(known_categories[category]),
+        )
+    else:
+        top_category = "None"
+
+    return [
+        "Category Summary",
+        "----------------",
+        f"Detected mapped categories: {len(known_categories)}",
+        f"Mapped API count: {mapped_api_count}",
+        f"Unknown API count: {unknown_api_count}",
+        f"Top category: {top_category}",
+    ]
+
+
 def build_report(
     selected_path: Path,
     analyzed_path: Path,
@@ -169,6 +197,10 @@ def build_report(
     lines.append(f"Static Review Score: {score} / {MAX_SCORE}")
     lines.append(f"Review Priority: {get_review_priority(score)}")
     lines.append("")
+
+    lines.extend(get_category_summary(grouped_apis))
+    lines.append("")
+
     lines.append("Detected Categories")
     lines.append("-------------------")
 
