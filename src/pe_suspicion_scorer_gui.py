@@ -222,13 +222,14 @@ def analyze_file(selected_path: Path) -> str:
     )
 
 
-class PESuspicionScorerApp:
+class PEStaticReviewScorerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("PE Static Review Scorer")
         self.root.geometry("960x720")
 
         self.selected_file = tk.StringVar()
+        self.current_report = ""
 
         self.build_layout()
 
@@ -265,12 +266,22 @@ class PESuspicionScorerApp:
         )
         browse_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        button_row = tk.Frame(container)
+        button_row.pack(anchor="w", pady=(12, 16))
+
         analyze_button = tk.Button(
-            container,
+            button_row,
             text="Analyze Selected File",
             command=self.analyze_selected_file,
         )
-        analyze_button.pack(anchor="w", pady=(12, 16))
+        analyze_button.pack(side=tk.LEFT)
+
+        save_button = tk.Button(
+            button_row,
+            text="Save Report",
+            command=self.save_report,
+        )
+        save_button.pack(side=tk.LEFT, padx=(8, 0))
 
         self.output = scrolledtext.ScrolledText(
             container,
@@ -311,13 +322,37 @@ class PESuspicionScorerApp:
             messagebox.showerror("Analysis failed", str(error))
             return
 
+        self.current_report = report
         self.output.delete("1.0", tk.END)
         self.output.insert(tk.END, report)
+
+    def save_report(self) -> None:
+        report = self.output.get("1.0", tk.END).strip()
+
+        if not report:
+            messagebox.showwarning("No report", "Please analyze a file before saving a report.")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Save Analysis Report",
+            defaultextension=".txt",
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("Markdown files", "*.md"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not save_path:
+            return
+
+        Path(save_path).write_text(report, encoding="utf-8")
+        messagebox.showinfo("Report saved", "The analysis report was saved successfully.")
 
 
 def main() -> None:
     root = tk.Tk()
-    app = PESuspicionScorerApp(root)
+    app = PEStaticReviewScorerApp(root)
     root.mainloop()
 
 
