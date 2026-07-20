@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import re
 import subprocess
@@ -13,6 +14,14 @@ import pefile
 
 
 MAX_SCORE = 10000
+
+PE_MACHINE_TYPES = {
+    0x014C: "x86",
+    0x8664: "x64",
+    0x01C0: "ARM",
+    0xAA64: "ARM64",
+}
+
 CATEGORY_BREADTH_WEIGHT = 120
 DEFAULT_SCAN_LIMIT = 50
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +86,7 @@ COMBINATION_WEIGHTS = {
 class AnalysisResult:
     selected_path: Path
     analyzed_path: Path
+    pe_metadata: dict[str, str]
     grouped_apis: dict[str, list[str]]
     score: int
     priority: str
@@ -503,6 +513,77 @@ def append_string_indicators(
     )
 
 
+def format_pe_timestamp(timestamp: int) -> str:
+    if not timestamp:
+        return "Not available"
+
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+    except (OverflowError, OSError, ValueError):
+        return "Invalid timestamp"
+
+
+def get_machine_name(machine_value: int) -> str:
+    machine_name = PE_MACHINE_TYPES.get(machine_value)
+
+    if machine_name:
+        return machine_name
+
+    return f"Unknown ({hex(machine_value)})"
+
+
+def calculate_sha256(pe_path: Path) -> str:
+    digest = hashlib.sha256()
+
+    with pe_path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def extract_pe_metadata(pe_path: Path) -> dict[str, str]:
+    pe = pefile.PE(str(pe_path), fast_load=True)
+
+    try:
+        optional_header = pe.OPTIONAL_HEADER
+        file_header = pe.FILE_HEADER
+
+        return {
+            "file_name": pe_path.name,
+            "file_size": str(pe_path.stat().st_size),
+            "sha256": calculate_sha256(pe_path),
+            "machine": get_machine_name(file_header.Machine),
+            "section_count": str(file_header.NumberOfSections),
+            "compile_timestamp": format_pe_timestamp(file_header.TimeDateStamp),
+            "entry_point": hex(optional_header.AddressOfEntryPoint),
+            "image_base": hex(optional_header.ImageBase),
+            "subsystem": pefile.SUBSYSTEM_TYPE.get(
+                optional_header.Subsystem,
+                str(optional_header.Subsystem),
+            ),
+        }
+    finally:
+        pe.close()
+
+
+def append_pe_metadata(lines: list[str], metadata: dict[str, str]) -> None:
+    lines.append("")
+    lines.append("PE Metadata")
+    lines.append("-----------")
+    lines.append(f"File Name: {metadata.get('file_name', 'Unknown')}")
+    lines.append(f"File Size: {metadata.get('file_size', 'Unknown')} bytes")
+    lines.append(f"SHA256: {metadata.get('sha256', 'Unknown')}")
+    lines.append(f"Machine: {metadata.get('machine', 'Unknown')}")
+    lines.append(f"Section Count: {metadata.get('section_count', 'Unknown')}")
+    lines.append(f"Compile Timestamp: {metadata.get('compile_timestamp', 'Unknown')}")
+    lines.append(f"Entry Point: {metadata.get('entry_point', 'Unknown')}")
+    lines.append(f"Image Base: {metadata.get('image_base', 'Unknown')}")
+    lines.append(f"Subsystem: {metadata.get('subsystem', 'Unknown')}")
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -512,6 +593,7 @@ def analyze_path_data(
     if not analyzed_path.exists():
         raise FileNotFoundError(f"Analyzed file does not exist: {analyzed_path}")
 
+    pe_metadata = extract_pe_metadata(analyzed_path)
     imported_apis = extract_imported_apis(analyzed_path)
     grouped_apis = group_apis_by_category(imported_apis, api_categories)
     score = calculate_static_review_score(grouped_apis)
@@ -531,6 +613,7 @@ def analyze_path_data(
     return AnalysisResult(
         selected_path=selected_path,
         analyzed_path=analyzed_path,
+        pe_metadata=pe_metadata,
         grouped_apis=grouped_apis,
         score=score,
         priority=get_review_priority(score),
@@ -549,6 +632,7 @@ def build_report(result: AnalysisResult) -> str:
     lines.append(f"Analyzed File: {result.analyzed_path}")
     lines.append(f"Static Review Score: {result.score} / {MAX_SCORE}")
     lines.append(f"Review Priority: {result.priority}")
+    append_pe_metadata(lines, result.pe_metadata)
 
     lines.append("")
     lines.append("Analysis Summary")
@@ -759,6 +843,7 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "file_name": result.analyzed_path.name,
         "file_path": str(result.analyzed_path),
         "selected_path": str(result.selected_path),
+        "pe_metadata": result.pe_metadata,
         "score": result.score,
         "priority": result.priority,
         "detected_categories": result.detected_categories,
