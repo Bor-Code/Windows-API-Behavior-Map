@@ -1,4 +1,5 @@
 import csv
+from collections import Counter
 import hashlib
 import json
 import re
@@ -940,6 +941,61 @@ def find_pe_files(folder_path: Path) -> list[Path]:
     )
 
 
+def build_batch_summary(
+    discovered_count: int,
+    scan_limit: int,
+    results: list[AnalysisResult],
+    failures: list[tuple[Path, str]],
+) -> list[str]:
+    lines: list[str] = []
+    scanned_count = len(results) + len(failures)
+    skipped_count = max(discovered_count - scanned_count, 0)
+
+    priority_counts = Counter(result.priority for result in results)
+    category_counts: Counter[str] = Counter()
+
+    for result in results:
+        category_counts.update(result.detected_categories)
+
+    highest_result = max(results, key=lambda result: result.score, default=None)
+    top_category = category_counts.most_common(1)
+
+    lines.append("Batch Summary")
+    lines.append("-------------")
+    lines.append(f"Discovered PE Files: {discovered_count}")
+    lines.append(f"Scan Limit: {scan_limit}")
+    lines.append(f"Scanned Files: {scanned_count}")
+    lines.append(f"Successful Analyses: {len(results)}")
+    lines.append(f"Failed Analyses: {len(failures)}")
+    lines.append(f"Skipped By Limit: {skipped_count}")
+
+    if highest_result:
+        lines.append(
+            "Highest Score: "
+            f"{highest_result.score} / {MAX_SCORE} "
+            f"({highest_result.priority}) - {highest_result.analyzed_path.name}"
+        )
+    else:
+        lines.append("Highest Score: None")
+
+    if priority_counts:
+        priority_text = ", ".join(
+            f"{priority}: {count}"
+            for priority, count in sorted(priority_counts.items())
+        )
+        lines.append(f"Priority Distribution: {priority_text}")
+    else:
+        lines.append("Priority Distribution: None")
+
+    if top_category:
+        category, count = top_category[0]
+        lines.append(f"Most Common Category: {category} ({count} files)")
+    else:
+        lines.append("Most Common Category: None")
+
+    return lines
+
+
 def build_batch_report(
     folder_path: Path,
     discovered_count: int,
@@ -950,20 +1006,16 @@ def build_batch_report(
     lines: list[str] = []
     sorted_results = sorted(results, key=lambda result: result.score, reverse=True)
 
-    attempted_count = len(results) + len(failures)
-    skipped_by_limit = max(discovered_count - attempted_count, 0)
-
+    lines.extend(
+        build_batch_summary(
+            discovered_count=discovered_count,
+            scan_limit=scan_limit,
+            results=results,
+            failures=failures,
+        )
+    )
+    lines.append("")
     lines.append(f"Selected Folder: {folder_path}")
-    lines.append(f"Discovered PE Files: {discovered_count}")
-    lines.append(f"Analyzed PE Files: {len(results)}")
-    lines.append(f"Failed Files: {len(failures)}")
-    lines.append(f"Scan Limit: {scan_limit}")
-    lines.append(f"Skipped by Limit: {skipped_by_limit}")
-
-    if sorted_results:
-        top_result = sorted_results[0]
-        lines.append(f"Highest Review Priority File: {top_result.analyzed_path}")
-        lines.append(f"Highest Static Review Score: {top_result.score} / {MAX_SCORE}")
 
     lines.append("")
     lines.append("Batch Review Results")
