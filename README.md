@@ -56,3 +56,31 @@ Example:
 
 ```powershell
 python .\src\api_behavior_mapper.py --imports .\sample-inputs\imports.txt
+## Project Status
+
+Windows API Behavior Map is now in a foundation-complete state.
+
+The project includes:
+
+- Windows API behavior category documentation
+- API behavior mapper CLI
+- PE Static Review Scorer GUI
+- single-file PE review
+- folder-based PE batch review
+- CSV export
+- JSON export
+- scan limit support
+- static review reasoning output
+- score legend and review priority explanation
+- usage guide
+- Python requirements file
+
+Future work should focus on extending API mappings, improving report templates, and starting a broader PE static triage project.
+
+## Final Scope Note
+
+This project should be treated as a defensive PE import table review assistant.
+
+It does not execute files, classify files as malicious, or replace full malware analysis.
+
+The next project should build on this foundation by adding PE metadata review, section analysis, strings review, entropy checks, and structured triage reporting.
