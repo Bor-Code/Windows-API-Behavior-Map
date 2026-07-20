@@ -783,6 +783,54 @@ def append_imported_dll_review_notes(lines: list[str], imported_dlls: list[str])
         lines.append(f"- {note}")
 
 
+def build_contextual_review_reasons(
+    base_reasons: list[str],
+    sections: list[dict[str, object]],
+    imported_dlls: list[str],
+    string_indicators: dict[str, list[str]],
+) -> list[str]:
+    reasons = list(base_reasons)
+
+    section_notes = get_section_review_notes(sections)
+    dll_notes = get_imported_dll_review_notes(imported_dlls)
+    string_summary = summarize_string_indicators(string_indicators)
+
+    if section_notes:
+        reasons.append(
+            "Section-level indicators were found, so PE section permissions and entropy should be reviewed."
+        )
+
+    if dll_notes:
+        reasons.append(
+            "Imported DLL context generated review notes, so DLL usage should be checked with imported APIs."
+        )
+
+    if string_summary != "No notable string indicators":
+        reasons.append(
+            f"String indicators were found: {string_summary}."
+        )
+
+    if section_notes or dll_notes or string_summary != "No notable string indicators":
+        reasons.append(
+            "The review priority combines import categories with metadata, section, DLL, and string context."
+        )
+
+    return reasons
+
+
+def append_review_reasons(lines: list[str], reasons: list[str]) -> None:
+    lines.append("")
+    lines.append("Review Reasons")
+    lines.append("--------------")
+
+    if not reasons:
+        lines.append("No review reasons were generated.")
+        return
+
+    for reason in reasons:
+        lines.append(f"- {reason}")
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -801,6 +849,12 @@ def analyze_path_data(
     reason_lines = build_review_reasons(grouped_apis)
     printable_strings = extract_printable_strings(analyzed_path)
     string_indicators = classify_string_indicators(printable_strings)
+    reason_lines = build_contextual_review_reasons(
+        reason_lines,
+        pe_sections,
+        imported_dlls,
+        string_indicators,
+    )
 
     known_categories = {
         category: api_names
@@ -845,6 +899,7 @@ def build_report(result: AnalysisResult) -> str:
     lines.append("Analysis Summary")
     lines.append("----------------")
     lines.extend(get_category_summary(result.grouped_apis))
+    append_review_reasons(lines, result.reason_lines)
 
     lines.append("")
     lines.append("Detected Categories")
