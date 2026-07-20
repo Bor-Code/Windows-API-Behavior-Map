@@ -79,6 +79,7 @@ class AnalysisResult:
     priority: str
     mapped_api_count: int
     unknown_api_count: int
+    reason_lines: list[str]
     detected_categories: list[str]
 
 
@@ -213,6 +214,87 @@ def get_category_summary(grouped_apis: dict[str, list[str]]) -> list[str]:
     ]
 
 
+
+def build_review_reasons(grouped_apis: dict[str, list[str]]) -> list[str]:
+    reasons: list[str] = []
+    detected_categories = sorted(set(grouped_apis) - {"Unknown"})
+
+    if detected_categories:
+        reasons.append(
+            "Mapped imports were found in these behavior categories: "
+            + ", ".join(detected_categories)
+            + "."
+        )
+
+    for category in detected_categories:
+        api_names = grouped_apis.get(category, [])
+        weighted_apis = [
+            api_name
+            for api_name in api_names
+            if API_SIGNAL_WEIGHTS.get(api_name, 0) >= 100
+        ]
+
+        if weighted_apis:
+            reasons.append(
+                f"{category} review priority increased because higher-signal APIs were detected: "
+                + ", ".join(weighted_apis[:8])
+                + "."
+            )
+        elif api_names:
+            reasons.append(
+                f"{category} activity should be reviewed because mapped APIs were detected: "
+                + ", ".join(api_names[:8])
+                + "."
+            )
+
+    for category_a, category_b in COMBINATION_WEIGHTS:
+        if category_a in detected_categories and category_b in detected_categories:
+            reasons.append(
+                f"{category_a} and {category_b} indicators appear together, so their combined behavior should be reviewed."
+            )
+
+    unknown_count = len(grouped_apis.get("Unknown", []))
+    if unknown_count:
+        reasons.append(
+            f"{unknown_count} imported APIs are not mapped yet. They are shown for visibility but do not increase the score."
+        )
+
+    if not reasons:
+        reasons.append(
+            "No mapped behavior categories were detected from the current import table mapping."
+        )
+
+    reasons.append(
+        "The score is a static review priority, not a malware verdict."
+    )
+
+    return reasons
+
+
+def build_next_review_steps(grouped_apis: dict[str, list[str]]) -> list[str]:
+    steps: list[str] = []
+    detected_categories = set(grouped_apis) - {"Unknown"}
+
+    if "File System" in detected_categories:
+        steps.append("Review strings for file paths, created files, deleted files, and write targets.")
+    if "Registry" in detected_categories:
+        steps.append("Review Registry paths, Run/RunOnce keys, configuration values, and persistence-related strings.")
+    if "Process" in detected_categories:
+        steps.append("Review process creation, command-line strings, child process names, and termination behavior.")
+    if "Memory" in detected_categories:
+        steps.append("Review memory allocation and protection changes together with process and DLL loading indicators.")
+    if "Network" in detected_categories:
+        steps.append("Review URLs, domains, IP addresses, HTTP paths, and socket-related strings.")
+    if "DLL Loading" in detected_categories:
+        steps.append("Review loaded DLL names, dynamically resolved functions, and GetProcAddress usage.")
+
+    if not steps:
+        steps.append("Review the file with strings, metadata, sections, and other static analysis checks.")
+
+    steps.append("Use dynamic analysis only in a controlled lab if static indicators need confirmation.")
+    return steps
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -225,6 +307,7 @@ def analyze_path_data(
     imported_apis = extract_imported_apis(analyzed_path)
     grouped_apis = group_apis_by_category(imported_apis, api_categories)
     score = calculate_static_review_score(grouped_apis)
+    reason_lines = build_review_reasons(grouped_apis)
 
     known_categories = {
         category: api_names
@@ -243,6 +326,7 @@ def analyze_path_data(
         priority=get_review_priority(score),
         mapped_api_count=mapped_api_count,
         unknown_api_count=unknown_api_count,
+        reason_lines=reason_lines,
         detected_categories=sorted(known_categories),
     )
 
@@ -432,6 +516,8 @@ def write_results_csv(
                     "detected_categories": "; ".join(result.detected_categories),
                     "mapped_api_count": result.mapped_api_count,
                     "unknown_api_count": result.unknown_api_count,
+        "review_reasons": result.reason_lines,
+        "next_review_steps": build_next_review_steps(result.grouped_apis),
                     "analysis_status": "analyzed",
                     "error": "",
                 }
