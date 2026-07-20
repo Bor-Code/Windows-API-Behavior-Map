@@ -1,5 +1,7 @@
 import csv
+import hashlib
 import json
+import re
 import subprocess
 import threading
 import tkinter as tk
@@ -12,11 +14,21 @@ import pefile
 
 
 MAX_SCORE = 10000
+
+PE_MACHINE_TYPES = {
+    0x014C: "x86",
+    0x8664: "x64",
+    0x01C0: "ARM",
+    0xAA64: "ARM64",
+}
+
 CATEGORY_BREADTH_WEIGHT = 120
 DEFAULT_SCAN_LIMIT = 50
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATEGORIES_PATH = PROJECT_ROOT / "data" / "api_categories.json"
 SCANNABLE_PE_EXTENSIONS = {".exe", ".dll", ".scr"}
+MAX_STRING_SCAN_BYTES = 8 * 1024 * 1024
+STRING_INDICATOR_LIMIT = 12
 
 API_SIGNAL_WEIGHTS = {
     "CreateFileA": 40,
@@ -74,12 +86,15 @@ COMBINATION_WEIGHTS = {
 class AnalysisResult:
     selected_path: Path
     analyzed_path: Path
+    pe_metadata: dict[str, str]
+    pe_sections: list[dict[str, object]]
     grouped_apis: dict[str, list[str]]
     score: int
     priority: str
     mapped_api_count: int
     unknown_api_count: int
     reason_lines: list[str]
+    string_indicators: dict[str, list[str]]
     detected_categories: list[str]
 
 
@@ -345,6 +360,290 @@ def build_next_review_steps(grouped_apis: dict[str, list[str]]) -> list[str]:
     return steps
 
 
+
+def extract_printable_strings(pe_path: Path) -> list[str]:
+    with pe_path.open("rb") as file:
+        data = file.read(MAX_STRING_SCAN_BYTES)
+
+    raw_strings = re.findall(rb"[\x20-\x7e]{5,180}", data)
+
+    decoded_strings: list[str] = []
+    seen_strings: set[str] = set()
+
+    for raw_string in raw_strings:
+        decoded_string = raw_string.decode("latin-1", errors="ignore").strip()
+
+        if decoded_string and decoded_string not in seen_strings:
+            decoded_strings.append(decoded_string)
+            seen_strings.add(decoded_string)
+
+        if len(decoded_strings) >= 3000:
+            break
+
+    return decoded_strings
+
+
+def add_string_indicator(
+    indicators: dict[str, list[str]],
+    category: str,
+    value: str,
+) -> None:
+    if len(indicators[category]) >= STRING_INDICATOR_LIMIT:
+        return
+
+    if value not in indicators[category]:
+        indicators[category].append(value)
+
+
+def looks_like_ip_address(value: str) -> bool:
+    match = re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value)
+
+    if not match:
+        return False
+
+    return all(0 <= int(part) <= 255 for part in value.split("."))
+
+
+def classify_string_indicators(strings: list[str]) -> dict[str, list[str]]:
+    indicators: dict[str, list[str]] = {
+        "URLs": [],
+        "IP Addresses": [],
+        "Registry Paths": [],
+        "Windows Paths": [],
+        "Command Line Indicators": [],
+        "DLL Names": [],
+        "File Names": [],
+    }
+
+    command_keywords = (
+        "cmd.exe",
+        "powershell",
+        "rundll32",
+        "regsvr32",
+        "schtasks",
+        "wscript",
+        "cscript",
+        "mshta",
+        " /c ",
+        " -enc",
+    )
+
+    file_extensions = (
+        ".exe",
+        ".dll",
+        ".scr",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".vbs",
+        ".js",
+        ".tmp",
+        ".dat",
+        ".txt",
+    )
+
+    for value in strings:
+        cleaned_value = value.strip()
+        lower_value = cleaned_value.lower()
+
+        if re.search(r"https?://|www\.", lower_value):
+            add_string_indicator(indicators, "URLs", cleaned_value)
+
+        for ip_candidate in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", cleaned_value):
+            if looks_like_ip_address(ip_candidate):
+                add_string_indicator(indicators, "IP Addresses", ip_candidate)
+
+        if (
+            "hkey_" in lower_value
+            or "hkcu\\" in lower_value
+            or "hklm\\" in lower_value
+            or "\\software\\microsoft\\windows\\currentversion" in lower_value
+        ):
+            add_string_indicator(indicators, "Registry Paths", cleaned_value)
+
+        if re.search(r"[a-zA-Z]:\\", cleaned_value) or "\\windows\\" in lower_value:
+            add_string_indicator(indicators, "Windows Paths", cleaned_value)
+
+        if any(keyword in lower_value for keyword in command_keywords):
+            add_string_indicator(indicators, "Command Line Indicators", cleaned_value)
+
+        dll_matches = re.findall(r"\b[\w.\-]+\.dll\b", cleaned_value, flags=re.IGNORECASE)
+        for dll_name in dll_matches:
+            add_string_indicator(indicators, "DLL Names", dll_name)
+
+        if any(extension in lower_value for extension in file_extensions):
+            add_string_indicator(indicators, "File Names", cleaned_value)
+
+    return indicators
+
+
+def summarize_string_indicators(indicators: dict[str, list[str]]) -> str:
+    summary_parts = [
+        f"{category}: {len(values)}"
+        for category, values in indicators.items()
+        if values
+    ]
+
+    if not summary_parts:
+        return "No string indicators found"
+
+    return "; ".join(summary_parts)
+
+
+def append_string_indicators(
+    lines: list[str],
+    indicators: dict[str, list[str]],
+) -> None:
+    lines.append("\nString Indicators")
+    lines.append("-----------------")
+
+    if not any(indicators.values()):
+        lines.append("No notable string indicators were found in the scanned data.")
+        return
+
+    for category, values in indicators.items():
+        if not values:
+            continue
+
+        lines.append(f"\n{category}")
+        for value in values:
+            lines.append(f"- {value}")
+
+    lines.append(
+        "\nString indicators are static review hints and do not prove malicious behavior."
+    )
+
+
+def format_pe_timestamp(timestamp: int) -> str:
+    if not timestamp:
+        return "Not available"
+
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+    except (OverflowError, OSError, ValueError):
+        return "Invalid timestamp"
+
+
+def get_machine_name(machine_value: int) -> str:
+    machine_name = PE_MACHINE_TYPES.get(machine_value)
+
+    if machine_name:
+        return machine_name
+
+    return f"Unknown ({hex(machine_value)})"
+
+
+def calculate_sha256(pe_path: Path) -> str:
+    digest = hashlib.sha256()
+
+    with pe_path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def extract_pe_metadata(pe_path: Path) -> dict[str, str]:
+    pe = pefile.PE(str(pe_path), fast_load=True)
+
+    try:
+        optional_header = pe.OPTIONAL_HEADER
+        file_header = pe.FILE_HEADER
+
+        return {
+            "file_name": pe_path.name,
+            "file_size": str(pe_path.stat().st_size),
+            "sha256": calculate_sha256(pe_path),
+            "machine": get_machine_name(file_header.Machine),
+            "section_count": str(file_header.NumberOfSections),
+            "compile_timestamp": format_pe_timestamp(file_header.TimeDateStamp),
+            "entry_point": hex(optional_header.AddressOfEntryPoint),
+            "image_base": hex(optional_header.ImageBase),
+            "subsystem": pefile.SUBSYSTEM_TYPE.get(
+                optional_header.Subsystem,
+                str(optional_header.Subsystem),
+            ),
+        }
+    finally:
+        pe.close()
+
+
+def append_pe_metadata(lines: list[str], metadata: dict[str, str]) -> None:
+    lines.append("")
+    lines.append("PE Metadata")
+    lines.append("-----------")
+    lines.append(f"File Name: {metadata.get('file_name', 'Unknown')}")
+    lines.append(f"File Size: {metadata.get('file_size', 'Unknown')} bytes")
+    lines.append(f"SHA256: {metadata.get('sha256', 'Unknown')}")
+    lines.append(f"Machine: {metadata.get('machine', 'Unknown')}")
+    lines.append(f"Section Count: {metadata.get('section_count', 'Unknown')}")
+    lines.append(f"Compile Timestamp: {metadata.get('compile_timestamp', 'Unknown')}")
+    lines.append(f"Entry Point: {metadata.get('entry_point', 'Unknown')}")
+    lines.append(f"Image Base: {metadata.get('image_base', 'Unknown')}")
+    lines.append(f"Subsystem: {metadata.get('subsystem', 'Unknown')}")
+
+
+def clean_section_name(raw_name: bytes) -> str:
+    return raw_name.rstrip(b"\x00").decode("utf-8", errors="replace") or "unnamed"
+
+
+def extract_pe_sections(pe_path: Path) -> list[dict[str, object]]:
+    pe = pefile.PE(str(pe_path), fast_load=True)
+
+    try:
+        sections: list[dict[str, object]] = []
+
+        for section in pe.sections:
+            sections.append(
+                {
+                    "name": clean_section_name(section.Name),
+                    "virtual_address": hex(section.VirtualAddress),
+                    "virtual_size": int(section.Misc_VirtualSize),
+                    "raw_size": int(section.SizeOfRawData),
+                    "entropy": round(float(section.get_entropy()), 2),
+                }
+            )
+
+        return sections
+    finally:
+        pe.close()
+
+
+def summarize_pe_sections(sections: list[dict[str, object]]) -> str:
+    if not sections:
+        return "No PE sections found"
+
+    names = [str(section.get("name", "unknown")) for section in sections[:8]]
+    summary = ", ".join(names)
+
+    if len(sections) > 8:
+        summary += f", +{len(sections) - 8} more"
+
+    return summary
+
+
+def append_pe_sections(lines: list[str], sections: list[dict[str, object]]) -> None:
+    lines.append("")
+    lines.append("PE Sections")
+    lines.append("-----------")
+
+    if not sections:
+        lines.append("No PE sections found.")
+        return
+
+    for section in sections:
+        lines.append(
+            "- "
+            f"{section.get('name', 'unknown')} | "
+            f"VA: {section.get('virtual_address', 'unknown')} | "
+            f"Virtual Size: {section.get('virtual_size', 'unknown')} | "
+            f"Raw Size: {section.get('raw_size', 'unknown')} | "
+            f"Entropy: {section.get('entropy', 'unknown')}"
+        )
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -354,10 +653,14 @@ def analyze_path_data(
     if not analyzed_path.exists():
         raise FileNotFoundError(f"Analyzed file does not exist: {analyzed_path}")
 
+    pe_metadata = extract_pe_metadata(analyzed_path)
+    pe_sections = extract_pe_sections(analyzed_path)
     imported_apis = extract_imported_apis(analyzed_path)
     grouped_apis = group_apis_by_category(imported_apis, api_categories)
     score = calculate_static_review_score(grouped_apis)
     reason_lines = build_review_reasons(grouped_apis)
+    printable_strings = extract_printable_strings(analyzed_path)
+    string_indicators = classify_string_indicators(printable_strings)
 
     known_categories = {
         category: api_names
@@ -371,12 +674,15 @@ def analyze_path_data(
     return AnalysisResult(
         selected_path=selected_path,
         analyzed_path=analyzed_path,
+        pe_metadata=pe_metadata,
+        pe_sections=pe_sections,
         grouped_apis=grouped_apis,
         score=score,
         priority=get_review_priority(score),
         mapped_api_count=mapped_api_count,
         unknown_api_count=unknown_api_count,
         reason_lines=reason_lines,
+        string_indicators=string_indicators,
         detected_categories=sorted(known_categories),
     )
 
@@ -388,6 +694,8 @@ def build_report(result: AnalysisResult) -> str:
     lines.append(f"Analyzed File: {result.analyzed_path}")
     lines.append(f"Static Review Score: {result.score} / {MAX_SCORE}")
     lines.append(f"Review Priority: {result.priority}")
+    append_pe_metadata(lines, result.pe_metadata)
+    append_pe_sections(lines, result.pe_sections)
 
     lines.append("")
     lines.append("Analysis Summary")
@@ -549,6 +857,7 @@ def write_results_csv(
                 "detected_categories",
                 "mapped_api_count",
                 "unknown_api_count",
+                "string_indicator_summary",
                 "analysis_status",
                 "error",
             ],
@@ -566,6 +875,7 @@ def write_results_csv(
                     "detected_categories": "; ".join(result.detected_categories),
                     "mapped_api_count": result.mapped_api_count,
                     "unknown_api_count": result.unknown_api_count,
+                    "string_indicator_summary": summarize_string_indicators(result.string_indicators),
         "review_reasons": result.reason_lines,
         "next_review_steps": build_next_review_steps(result.grouped_apis),
         "analysis_summary": build_analysis_summary(result),
@@ -596,11 +906,16 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "file_name": result.analyzed_path.name,
         "file_path": str(result.analyzed_path),
         "selected_path": str(result.selected_path),
+        "pe_metadata": result.pe_metadata,
+        "pe_sections": result.pe_sections,
+        "section_summary": summarize_pe_sections(result.pe_sections),
         "score": result.score,
         "priority": result.priority,
         "detected_categories": result.detected_categories,
         "mapped_api_count": result.mapped_api_count,
         "unknown_api_count": result.unknown_api_count,
+        "string_indicator_summary": summarize_string_indicators(result.string_indicators),
+        "string_indicators": result.string_indicators,
         "grouped_apis": result.grouped_apis,
         "analysis_status": "analyzed",
     }
