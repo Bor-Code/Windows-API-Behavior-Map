@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 import subprocess
 import threading
 import tkinter as tk
@@ -17,6 +18,8 @@ DEFAULT_SCAN_LIMIT = 50
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATEGORIES_PATH = PROJECT_ROOT / "data" / "api_categories.json"
 SCANNABLE_PE_EXTENSIONS = {".exe", ".dll", ".scr"}
+MAX_STRING_SCAN_BYTES = 8 * 1024 * 1024
+STRING_INDICATOR_LIMIT = 12
 
 API_SIGNAL_WEIGHTS = {
     "CreateFileA": 40,
@@ -80,6 +83,7 @@ class AnalysisResult:
     mapped_api_count: int
     unknown_api_count: int
     reason_lines: list[str]
+    string_indicators: dict[str, list[str]]
     detected_categories: list[str]
 
 
@@ -345,6 +349,160 @@ def build_next_review_steps(grouped_apis: dict[str, list[str]]) -> list[str]:
     return steps
 
 
+
+def extract_printable_strings(pe_path: Path) -> list[str]:
+    with pe_path.open("rb") as file:
+        data = file.read(MAX_STRING_SCAN_BYTES)
+
+    raw_strings = re.findall(rb"[\x20-\x7e]{5,180}", data)
+
+    decoded_strings: list[str] = []
+    seen_strings: set[str] = set()
+
+    for raw_string in raw_strings:
+        decoded_string = raw_string.decode("latin-1", errors="ignore").strip()
+
+        if decoded_string and decoded_string not in seen_strings:
+            decoded_strings.append(decoded_string)
+            seen_strings.add(decoded_string)
+
+        if len(decoded_strings) >= 3000:
+            break
+
+    return decoded_strings
+
+
+def add_string_indicator(
+    indicators: dict[str, list[str]],
+    category: str,
+    value: str,
+) -> None:
+    if len(indicators[category]) >= STRING_INDICATOR_LIMIT:
+        return
+
+    if value not in indicators[category]:
+        indicators[category].append(value)
+
+
+def looks_like_ip_address(value: str) -> bool:
+    match = re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value)
+
+    if not match:
+        return False
+
+    return all(0 <= int(part) <= 255 for part in value.split("."))
+
+
+def classify_string_indicators(strings: list[str]) -> dict[str, list[str]]:
+    indicators: dict[str, list[str]] = {
+        "URLs": [],
+        "IP Addresses": [],
+        "Registry Paths": [],
+        "Windows Paths": [],
+        "Command Line Indicators": [],
+        "DLL Names": [],
+        "File Names": [],
+    }
+
+    command_keywords = (
+        "cmd.exe",
+        "powershell",
+        "rundll32",
+        "regsvr32",
+        "schtasks",
+        "wscript",
+        "cscript",
+        "mshta",
+        " /c ",
+        " -enc",
+    )
+
+    file_extensions = (
+        ".exe",
+        ".dll",
+        ".scr",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".vbs",
+        ".js",
+        ".tmp",
+        ".dat",
+        ".txt",
+    )
+
+    for value in strings:
+        cleaned_value = value.strip()
+        lower_value = cleaned_value.lower()
+
+        if re.search(r"https?://|www\.", lower_value):
+            add_string_indicator(indicators, "URLs", cleaned_value)
+
+        for ip_candidate in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", cleaned_value):
+            if looks_like_ip_address(ip_candidate):
+                add_string_indicator(indicators, "IP Addresses", ip_candidate)
+
+        if (
+            "hkey_" in lower_value
+            or "hkcu\\" in lower_value
+            or "hklm\\" in lower_value
+            or "\\software\\microsoft\\windows\\currentversion" in lower_value
+        ):
+            add_string_indicator(indicators, "Registry Paths", cleaned_value)
+
+        if re.search(r"[a-zA-Z]:\\", cleaned_value) or "\\windows\\" in lower_value:
+            add_string_indicator(indicators, "Windows Paths", cleaned_value)
+
+        if any(keyword in lower_value for keyword in command_keywords):
+            add_string_indicator(indicators, "Command Line Indicators", cleaned_value)
+
+        dll_matches = re.findall(r"\b[\w.\-]+\.dll\b", cleaned_value, flags=re.IGNORECASE)
+        for dll_name in dll_matches:
+            add_string_indicator(indicators, "DLL Names", dll_name)
+
+        if any(extension in lower_value for extension in file_extensions):
+            add_string_indicator(indicators, "File Names", cleaned_value)
+
+    return indicators
+
+
+def summarize_string_indicators(indicators: dict[str, list[str]]) -> str:
+    summary_parts = [
+        f"{category}: {len(values)}"
+        for category, values in indicators.items()
+        if values
+    ]
+
+    if not summary_parts:
+        return "No string indicators found"
+
+    return "; ".join(summary_parts)
+
+
+def append_string_indicators(
+    lines: list[str],
+    indicators: dict[str, list[str]],
+) -> None:
+    lines.append("\nString Indicators")
+    lines.append("-----------------")
+
+    if not any(indicators.values()):
+        lines.append("No notable string indicators were found in the scanned data.")
+        return
+
+    for category, values in indicators.items():
+        if not values:
+            continue
+
+        lines.append(f"\n{category}")
+        for value in values:
+            lines.append(f"- {value}")
+
+    lines.append(
+        "\nString indicators are static review hints and do not prove malicious behavior."
+    )
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -358,6 +516,8 @@ def analyze_path_data(
     grouped_apis = group_apis_by_category(imported_apis, api_categories)
     score = calculate_static_review_score(grouped_apis)
     reason_lines = build_review_reasons(grouped_apis)
+    printable_strings = extract_printable_strings(analyzed_path)
+    string_indicators = classify_string_indicators(printable_strings)
 
     known_categories = {
         category: api_names
@@ -377,6 +537,7 @@ def analyze_path_data(
         mapped_api_count=mapped_api_count,
         unknown_api_count=unknown_api_count,
         reason_lines=reason_lines,
+        string_indicators=string_indicators,
         detected_categories=sorted(known_categories),
     )
 
@@ -549,6 +710,7 @@ def write_results_csv(
                 "detected_categories",
                 "mapped_api_count",
                 "unknown_api_count",
+                "string_indicator_summary",
                 "analysis_status",
                 "error",
             ],
@@ -566,6 +728,7 @@ def write_results_csv(
                     "detected_categories": "; ".join(result.detected_categories),
                     "mapped_api_count": result.mapped_api_count,
                     "unknown_api_count": result.unknown_api_count,
+                    "string_indicator_summary": summarize_string_indicators(result.string_indicators),
         "review_reasons": result.reason_lines,
         "next_review_steps": build_next_review_steps(result.grouped_apis),
         "analysis_summary": build_analysis_summary(result),
@@ -601,6 +764,8 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "detected_categories": result.detected_categories,
         "mapped_api_count": result.mapped_api_count,
         "unknown_api_count": result.unknown_api_count,
+        "string_indicator_summary": summarize_string_indicators(result.string_indicators),
+        "string_indicators": result.string_indicators,
         "grouped_apis": result.grouped_apis,
         "analysis_status": "analyzed",
     }
