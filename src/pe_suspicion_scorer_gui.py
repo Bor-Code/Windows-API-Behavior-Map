@@ -87,6 +87,7 @@ class AnalysisResult:
     selected_path: Path
     analyzed_path: Path
     pe_metadata: dict[str, str]
+    pe_sections: list[dict[str, object]]
     grouped_apis: dict[str, list[str]]
     score: int
     priority: str
@@ -584,6 +585,65 @@ def append_pe_metadata(lines: list[str], metadata: dict[str, str]) -> None:
     lines.append(f"Subsystem: {metadata.get('subsystem', 'Unknown')}")
 
 
+def clean_section_name(raw_name: bytes) -> str:
+    return raw_name.rstrip(b"\x00").decode("utf-8", errors="replace") or "unnamed"
+
+
+def extract_pe_sections(pe_path: Path) -> list[dict[str, object]]:
+    pe = pefile.PE(str(pe_path), fast_load=True)
+
+    try:
+        sections: list[dict[str, object]] = []
+
+        for section in pe.sections:
+            sections.append(
+                {
+                    "name": clean_section_name(section.Name),
+                    "virtual_address": hex(section.VirtualAddress),
+                    "virtual_size": int(section.Misc_VirtualSize),
+                    "raw_size": int(section.SizeOfRawData),
+                    "entropy": round(float(section.get_entropy()), 2),
+                }
+            )
+
+        return sections
+    finally:
+        pe.close()
+
+
+def summarize_pe_sections(sections: list[dict[str, object]]) -> str:
+    if not sections:
+        return "No PE sections found"
+
+    names = [str(section.get("name", "unknown")) for section in sections[:8]]
+    summary = ", ".join(names)
+
+    if len(sections) > 8:
+        summary += f", +{len(sections) - 8} more"
+
+    return summary
+
+
+def append_pe_sections(lines: list[str], sections: list[dict[str, object]]) -> None:
+    lines.append("")
+    lines.append("PE Sections")
+    lines.append("-----------")
+
+    if not sections:
+        lines.append("No PE sections found.")
+        return
+
+    for section in sections:
+        lines.append(
+            "- "
+            f"{section.get('name', 'unknown')} | "
+            f"VA: {section.get('virtual_address', 'unknown')} | "
+            f"Virtual Size: {section.get('virtual_size', 'unknown')} | "
+            f"Raw Size: {section.get('raw_size', 'unknown')} | "
+            f"Entropy: {section.get('entropy', 'unknown')}"
+        )
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -594,6 +654,7 @@ def analyze_path_data(
         raise FileNotFoundError(f"Analyzed file does not exist: {analyzed_path}")
 
     pe_metadata = extract_pe_metadata(analyzed_path)
+    pe_sections = extract_pe_sections(analyzed_path)
     imported_apis = extract_imported_apis(analyzed_path)
     grouped_apis = group_apis_by_category(imported_apis, api_categories)
     score = calculate_static_review_score(grouped_apis)
@@ -614,6 +675,7 @@ def analyze_path_data(
         selected_path=selected_path,
         analyzed_path=analyzed_path,
         pe_metadata=pe_metadata,
+        pe_sections=pe_sections,
         grouped_apis=grouped_apis,
         score=score,
         priority=get_review_priority(score),
@@ -633,6 +695,7 @@ def build_report(result: AnalysisResult) -> str:
     lines.append(f"Static Review Score: {result.score} / {MAX_SCORE}")
     lines.append(f"Review Priority: {result.priority}")
     append_pe_metadata(lines, result.pe_metadata)
+    append_pe_sections(lines, result.pe_sections)
 
     lines.append("")
     lines.append("Analysis Summary")
@@ -844,6 +907,8 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "file_path": str(result.analyzed_path),
         "selected_path": str(result.selected_path),
         "pe_metadata": result.pe_metadata,
+        "pe_sections": result.pe_sections,
+        "section_summary": summarize_pe_sections(result.pe_sections),
         "score": result.score,
         "priority": result.priority,
         "detected_categories": result.detected_categories,
