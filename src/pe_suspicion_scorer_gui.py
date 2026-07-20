@@ -731,6 +731,58 @@ def append_imported_dlls(lines: list[str], imported_dlls: list[str]) -> None:
         lines.append(f"- {dll_name}")
 
 
+def get_imported_dll_review_notes(imported_dlls: list[str]) -> list[str]:
+    normalized_dlls = {dll_name.lower() for dll_name in imported_dlls}
+    notes: list[str] = []
+
+    if {"wininet.dll", "winhttp.dll", "ws2_32.dll", "urlmon.dll"} & normalized_dlls:
+        notes.append(
+            "Network-related DLLs were imported, so URL, domain, IP address, and network API usage should be reviewed."
+        )
+
+    if "advapi32.dll" in normalized_dlls:
+        notes.append(
+            "ADVAPI32.dll was imported, so Registry, service, credential, or security-related API usage should be reviewed."
+        )
+
+    if {"psapi.dll", "tlhelp32.dll"} & normalized_dlls:
+        notes.append(
+            "Process inspection related DLLs were imported, so process enumeration behavior should be reviewed."
+        )
+
+    if {"crypt32.dll", "bcrypt.dll", "ncrypt.dll"} & normalized_dlls:
+        notes.append(
+            "Crypto-related DLLs were imported, so encryption, certificate, hashing, or decoding behavior should be reviewed."
+        )
+
+    if {"shell32.dll", "shlwapi.dll"} & normalized_dlls:
+        notes.append(
+            "Shell-related DLLs were imported, so shortcut handling, path handling, and shell execution context should be reviewed."
+        )
+
+    if {"ntdll.dll", "kernel32.dll"} <= normalized_dlls:
+        notes.append(
+            "Core Windows runtime DLLs were imported, so low-level process, memory, file, and synchronization APIs should be reviewed in context."
+        )
+
+    return notes
+
+
+def append_imported_dll_review_notes(lines: list[str], imported_dlls: list[str]) -> None:
+    notes = get_imported_dll_review_notes(imported_dlls)
+
+    lines.append("")
+    lines.append("Imported DLL Review Notes")
+    lines.append("-------------------------")
+
+    if not notes:
+        lines.append("No imported DLL review notes were generated.")
+        return
+
+    for note in notes:
+        lines.append(f"- {note}")
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -787,6 +839,7 @@ def build_report(result: AnalysisResult) -> str:
     append_pe_sections(lines, result.pe_sections)
     append_section_review_notes(lines, result.pe_sections)
     append_imported_dlls(lines, result.imported_dlls)
+    append_imported_dll_review_notes(lines, result.imported_dlls)
 
     lines.append("")
     lines.append("Analysis Summary")
@@ -1000,6 +1053,7 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "pe_metadata": result.pe_metadata,
         "pe_sections": result.pe_sections,
         "imported_dlls": result.imported_dlls,
+        "imported_dll_review_notes": get_imported_dll_review_notes(result.imported_dlls),
         "section_summary": summarize_pe_sections(result.pe_sections),
         "section_review_notes": get_section_review_notes(result.pe_sections),
         "score": result.score,
