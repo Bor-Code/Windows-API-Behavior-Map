@@ -216,6 +216,17 @@ def get_category_summary(grouped_apis: dict[str, list[str]]) -> list[str]:
 
 
 
+
+def build_score_legend() -> list[str]:
+    return [
+        "0-3499: Low Review Priority",
+        "3500-6999: Medium Review Priority",
+        "7000-10000: High Review Priority",
+        "The score is based only on static import table indicators.",
+        "The score is not a malware verdict.",
+    ]
+
+
 def get_top_weighted_apis(grouped_apis: dict[str, list[str]], limit: int = 8) -> list[str]:
     weighted_apis: list[tuple[int, str]] = []
 
@@ -558,6 +569,7 @@ def write_results_csv(
         "review_reasons": result.reason_lines,
         "next_review_steps": build_next_review_steps(result.grouped_apis),
         "analysis_summary": build_analysis_summary(result),
+        "score_legend": build_score_legend(),
                     "analysis_status": "analyzed",
                     "error": "",
                 }
