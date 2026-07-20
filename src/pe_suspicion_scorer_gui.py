@@ -88,6 +88,7 @@ class AnalysisResult:
     analyzed_path: Path
     pe_metadata: dict[str, str]
     pe_sections: list[dict[str, object]]
+    imported_dlls: list[str]
     grouped_apis: dict[str, list[str]]
     score: int
     priority: str
@@ -699,6 +700,89 @@ def append_pe_sections(lines: list[str], sections: list[dict[str, object]]) -> N
         )
 
 
+def extract_imported_dlls(pe_path: Path) -> list[str]:
+    pe = pefile.PE(str(pe_path))
+    imported_dlls: list[str] = []
+
+    try:
+        if not hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
+            return imported_dlls
+
+        for import_entry in pe.DIRECTORY_ENTRY_IMPORT:
+            if import_entry.dll:
+                dll_name = import_entry.dll.decode("utf-8", errors="ignore")
+                imported_dlls.append(dll_name)
+    finally:
+        pe.close()
+
+    return sorted(set(imported_dlls))
+
+
+def append_imported_dlls(lines: list[str], imported_dlls: list[str]) -> None:
+    lines.append("")
+    lines.append("Imported DLLs")
+    lines.append("-------------")
+
+    if not imported_dlls:
+        lines.append("No imported DLLs found.")
+        return
+
+    for dll_name in imported_dlls:
+        lines.append(f"- {dll_name}")
+
+
+def get_imported_dll_review_notes(imported_dlls: list[str]) -> list[str]:
+    normalized_dlls = {dll_name.lower() for dll_name in imported_dlls}
+    notes: list[str] = []
+
+    if {"wininet.dll", "winhttp.dll", "ws2_32.dll", "urlmon.dll"} & normalized_dlls:
+        notes.append(
+            "Network-related DLLs were imported, so URL, domain, IP address, and network API usage should be reviewed."
+        )
+
+    if "advapi32.dll" in normalized_dlls:
+        notes.append(
+            "ADVAPI32.dll was imported, so Registry, service, credential, or security-related API usage should be reviewed."
+        )
+
+    if {"psapi.dll", "tlhelp32.dll"} & normalized_dlls:
+        notes.append(
+            "Process inspection related DLLs were imported, so process enumeration behavior should be reviewed."
+        )
+
+    if {"crypt32.dll", "bcrypt.dll", "ncrypt.dll"} & normalized_dlls:
+        notes.append(
+            "Crypto-related DLLs were imported, so encryption, certificate, hashing, or decoding behavior should be reviewed."
+        )
+
+    if {"shell32.dll", "shlwapi.dll"} & normalized_dlls:
+        notes.append(
+            "Shell-related DLLs were imported, so shortcut handling, path handling, and shell execution context should be reviewed."
+        )
+
+    if {"ntdll.dll", "kernel32.dll"} <= normalized_dlls:
+        notes.append(
+            "Core Windows runtime DLLs were imported, so low-level process, memory, file, and synchronization APIs should be reviewed in context."
+        )
+
+    return notes
+
+
+def append_imported_dll_review_notes(lines: list[str], imported_dlls: list[str]) -> None:
+    notes = get_imported_dll_review_notes(imported_dlls)
+
+    lines.append("")
+    lines.append("Imported DLL Review Notes")
+    lines.append("-------------------------")
+
+    if not notes:
+        lines.append("No imported DLL review notes were generated.")
+        return
+
+    for note in notes:
+        lines.append(f"- {note}")
+
+
 def analyze_path_data(
     selected_path: Path,
     api_categories: dict[str, str],
@@ -710,6 +794,7 @@ def analyze_path_data(
 
     pe_metadata = extract_pe_metadata(analyzed_path)
     pe_sections = extract_pe_sections(analyzed_path)
+    imported_dlls = extract_imported_dlls(analyzed_path)
     imported_apis = extract_imported_apis(analyzed_path)
     grouped_apis = group_apis_by_category(imported_apis, api_categories)
     score = calculate_static_review_score(grouped_apis)
@@ -731,6 +816,7 @@ def analyze_path_data(
         analyzed_path=analyzed_path,
         pe_metadata=pe_metadata,
         pe_sections=pe_sections,
+        imported_dlls=imported_dlls,
         grouped_apis=grouped_apis,
         score=score,
         priority=get_review_priority(score),
@@ -752,6 +838,8 @@ def build_report(result: AnalysisResult) -> str:
     append_pe_metadata(lines, result.pe_metadata)
     append_pe_sections(lines, result.pe_sections)
     append_section_review_notes(lines, result.pe_sections)
+    append_imported_dlls(lines, result.imported_dlls)
+    append_imported_dll_review_notes(lines, result.imported_dlls)
 
     lines.append("")
     lines.append("Analysis Summary")
@@ -964,6 +1052,8 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "selected_path": str(result.selected_path),
         "pe_metadata": result.pe_metadata,
         "pe_sections": result.pe_sections,
+        "imported_dlls": result.imported_dlls,
+        "imported_dll_review_notes": get_imported_dll_review_notes(result.imported_dlls),
         "section_summary": summarize_pe_sections(result.pe_sections),
         "section_review_notes": get_section_review_notes(result.pe_sections),
         "score": result.score,
