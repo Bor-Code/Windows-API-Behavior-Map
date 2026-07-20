@@ -215,6 +215,45 @@ def get_category_summary(grouped_apis: dict[str, list[str]]) -> list[str]:
 
 
 
+
+def get_top_weighted_apis(grouped_apis: dict[str, list[str]], limit: int = 8) -> list[str]:
+    weighted_apis: list[tuple[int, str]] = []
+
+    for category, api_names in grouped_apis.items():
+        if category == "Unknown":
+            continue
+
+        for api_name in api_names:
+            weight = API_SIGNAL_WEIGHTS.get(api_name, 0)
+            if weight > 0:
+                weighted_apis.append((weight, api_name))
+
+    weighted_apis.sort(key=lambda item: item[0], reverse=True)
+    return [api_name for _, api_name in weighted_apis[:limit]]
+
+
+def build_analysis_summary(result: AnalysisResult) -> list[str]:
+    detected_categories = sorted(set(result.grouped_apis) - {"Unknown"})
+    top_apis = get_top_weighted_apis(result.grouped_apis)
+
+    lines: list[str] = []
+    lines.append(f"Mapped API Count: {result.mapped_api_count}")
+    lines.append(f"Unknown API Count: {result.unknown_api_count}")
+    lines.append(f"Detected Category Count: {len(detected_categories)}")
+
+    if detected_categories:
+        lines.append("Detected Categories: " + ", ".join(detected_categories))
+    else:
+        lines.append("Detected Categories: None")
+
+    if top_apis:
+        lines.append("Highest Signal APIs: " + ", ".join(top_apis))
+    else:
+        lines.append("Highest Signal APIs: None")
+
+    return lines
+
+
 def build_review_reasons(grouped_apis: dict[str, list[str]]) -> list[str]:
     reasons: list[str] = []
     detected_categories = sorted(set(grouped_apis) - {"Unknown"})
@@ -518,6 +557,7 @@ def write_results_csv(
                     "unknown_api_count": result.unknown_api_count,
         "review_reasons": result.reason_lines,
         "next_review_steps": build_next_review_steps(result.grouped_apis),
+        "analysis_summary": build_analysis_summary(result),
                     "analysis_status": "analyzed",
                     "error": "",
                 }
