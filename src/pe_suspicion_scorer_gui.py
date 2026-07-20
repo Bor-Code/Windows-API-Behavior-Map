@@ -418,9 +418,9 @@ def build_report(result: AnalysisResult) -> str:
     lines.append("")
     lines.append("Analysis Note")
     lines.append("-------------")
-    lines.append("This score is based only on static import table indicators.")
+    lines.append("This result is based only on static PE import table indicators.")
     lines.append("It does not prove malicious behavior by itself.")
-    lines.append("The score only shows how much manual review may be useful.")
+    lines.append("Use the score as a manual review priority signal, not as a final verdict.")
 
     return "\n".join(lines)
 
@@ -492,9 +492,9 @@ def build_batch_report(
     lines.append("")
     lines.append("Analysis Note")
     lines.append("-------------")
-    lines.append("This batch report is based only on static import table indicators.")
+    lines.append("This batch report is based only on static PE import table indicators.")
     lines.append("It does not prove malicious behavior by itself.")
-    lines.append("The score only shows which files may deserve more manual review.")
+    lines.append("Use the scores to prioritize manual review, not as final verdicts.")
 
     return "\n".join(lines)
 
