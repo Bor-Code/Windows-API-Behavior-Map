@@ -603,6 +603,9 @@ def extract_pe_sections(pe_path: Path) -> list[dict[str, object]]:
                     "virtual_size": int(section.Misc_VirtualSize),
                     "raw_size": int(section.SizeOfRawData),
                     "entropy": round(float(section.get_entropy()), 2),
+                    "readable": bool(section.IMAGE_SCN_MEM_READ),
+                    "writable": bool(section.IMAGE_SCN_MEM_WRITE),
+                    "executable": bool(section.IMAGE_SCN_MEM_EXECUTE),
                 }
             )
 
@@ -624,6 +627,57 @@ def summarize_pe_sections(sections: list[dict[str, object]]) -> str:
     return summary
 
 
+def describe_section_flags(section: dict[str, object]) -> str:
+    flags: list[str] = []
+
+    if section.get("readable"):
+        flags.append("read")
+    if section.get("writable"):
+        flags.append("write")
+    if section.get("executable"):
+        flags.append("execute")
+
+    if not flags:
+        return "none"
+
+    return ", ".join(flags)
+
+
+def get_section_review_notes(sections: list[dict[str, object]]) -> list[str]:
+    notes: list[str] = []
+
+    for section in sections:
+        name = section.get("name", "unknown")
+        entropy = section.get("entropy", 0)
+
+        if section.get("writable") and section.get("executable"):
+            notes.append(
+                f"Section {name} is both writable and executable, so it should be reviewed carefully."
+            )
+
+        if isinstance(entropy, float) and entropy >= 7.0:
+            notes.append(
+                f"Section {name} has high entropy ({entropy}), so packing or compression should be reviewed."
+            )
+
+    return notes
+
+
+def append_section_review_notes(lines: list[str], sections: list[dict[str, object]]) -> None:
+    notes = get_section_review_notes(sections)
+
+    lines.append("")
+    lines.append("Section Review Notes")
+    lines.append("--------------------")
+
+    if not notes:
+        lines.append("No section-level review notes were generated.")
+        return
+
+    for note in notes:
+        lines.append(f"- {note}")
+
+
 def append_pe_sections(lines: list[str], sections: list[dict[str, object]]) -> None:
     lines.append("")
     lines.append("PE Sections")
@@ -640,7 +694,8 @@ def append_pe_sections(lines: list[str], sections: list[dict[str, object]]) -> N
             f"VA: {section.get('virtual_address', 'unknown')} | "
             f"Virtual Size: {section.get('virtual_size', 'unknown')} | "
             f"Raw Size: {section.get('raw_size', 'unknown')} | "
-            f"Entropy: {section.get('entropy', 'unknown')}"
+            f"Entropy: {section.get('entropy', 'unknown')} | "
+            f"Flags: {describe_section_flags(section)}"
         )
 
 
@@ -696,6 +751,7 @@ def build_report(result: AnalysisResult) -> str:
     lines.append(f"Review Priority: {result.priority}")
     append_pe_metadata(lines, result.pe_metadata)
     append_pe_sections(lines, result.pe_sections)
+    append_section_review_notes(lines, result.pe_sections)
 
     lines.append("")
     lines.append("Analysis Summary")
@@ -909,6 +965,7 @@ def analysis_result_to_dict(result: AnalysisResult) -> dict[str, object]:
         "pe_metadata": result.pe_metadata,
         "pe_sections": result.pe_sections,
         "section_summary": summarize_pe_sections(result.pe_sections),
+        "section_review_notes": get_section_review_notes(result.pe_sections),
         "score": result.score,
         "priority": result.priority,
         "detected_categories": result.detected_categories,
