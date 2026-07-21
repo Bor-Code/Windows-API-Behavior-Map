@@ -60,3 +60,57 @@ Example:
 
 ```powershell
 python .\src\api_behavior_mapper.py --imports .\sample-inputs\imports.txt
+```
+
+### PE Static Review Scorer GUI
+
+The GUI supports:
+
+- single PE file analysis
+- folder-based PE batch analysis
+- `.exe`, `.dll`, `.scr`, and `.lnk` input handling
+- scan limit support for folder analysis
+- PE metadata extraction
+- section entropy and flag review notes
+- imported DLL summary and review notes
+- static string indicator extraction
+- static review priority scoring
+- CSV export
+- JSON export
+- text report export
+
+Run the GUI:
+
+```powershell
+python .\src\pe_suspicion_scorer_gui.py
+```
+
+## Static Review Priority
+
+The static review priority score is a manual triage aid.
+
+It should be used to decide which files deserve closer review first. It does not classify a file as malicious or benign.
+
+A higher score means the file has more static indicators that may deserve analyst attention.
+
+## Project Status
+
+Windows API Behavior Map is in a foundation-complete state.
+
+The project includes defensive documentation, a CLI API behavior mapper, a GUI PE static review tool, metadata and section review, imported DLL context, string indicator extraction, batch scan summaries, and exportable reports.
+
+Future work can focus on expanding API mappings, improving scoring weights, adding more report templates, and building a broader static triage workflow.
+
+## Requirements
+
+Install dependencies with:
+
+```powershell
+pip install -r .\requirements.txt
+```
+
+## Final Scope Note
+
+This project should be treated as a defensive PE static review assistant.
+
+It does not execute files, classify files as malicious, or replace full malware analysis.
