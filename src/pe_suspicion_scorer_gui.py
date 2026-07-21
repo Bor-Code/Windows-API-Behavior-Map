@@ -1046,6 +1046,15 @@ def build_batch_report(
             lines.append(f"   Detected Categories: {category_text}")
             lines.append(f"   Mapped APIs: {result.mapped_api_count}")
             lines.append(f"   Unknown APIs: {result.unknown_api_count}")
+            lines.append("")
+            lines.append("Suggested Batch Review Checklist")
+            lines.append("--------------------------------")
+            lines.append("- Start with the highest score files first.")
+            lines.append("- Review files with high priority before low priority files.")
+            lines.append("- Compare detected categories across files in the same folder.")
+            lines.append("- Review unknown APIs and failed analyses separately.")
+            lines.append("- Use batch results for triage, not as final malware verdicts.")
+
 
     if failures:
         lines.append("")
