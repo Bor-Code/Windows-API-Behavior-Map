@@ -886,6 +886,9 @@ def analyze_path_data(
 def build_report(result: AnalysisResult) -> str:
     lines: list[str] = []
 
+    lines.append("PE Static Review Report")
+    lines.append("=======================")
+    lines.append("")
     lines.append(f"Selected File: {result.selected_path}")
     lines.append(f"Analyzed File: {result.analyzed_path}")
     lines.append(f"Static Review Score: {result.score} / {MAX_SCORE}")
@@ -1012,6 +1015,10 @@ def build_batch_report(
 ) -> str:
     lines: list[str] = []
     sorted_results = sorted(results, key=lambda result: result.score, reverse=True)
+
+    lines.append("PE Batch Static Review Report")
+    lines.append("=============================")
+    lines.append("")
 
     lines.extend(
         build_batch_summary(
