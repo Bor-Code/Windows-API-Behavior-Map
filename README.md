@@ -1,23 +1,27 @@
 ﻿# Windows API Behavior Map
 
-Windows API Behavior Map is a defensive documentation and tooling project for mapping commonly observed Windows API functions to behavior categories used during PE malware analysis.
+Windows API Behavior Map is a defensive static analysis project for reviewing Windows PE files without executing them.
 
-The project helps analysts review Windows PE import tables, group imported APIs by behavior category, and write careful static analysis notes.
+The project helps analysts inspect PE import tables, map imported Windows APIs to behavior categories, review PE metadata and static indicators, and produce a static review priority score for manual triage.
 
-It does not label a file as malicious based on a single API function or a score.
+The score is not a malware verdict.
 
 ## Purpose
 
-During PE malware analysis, imported Windows API functions can provide useful behavioral hints.
+During PE malware analysis, imported Windows API functions and PE metadata can provide useful behavioral hints.
 
-This project documents and supports:
+This project supports:
 
-- common Windows API behavior categories
+- Windows API behavior category mapping
 - PE import table interpretation
-- static review scoring for manual triage
+- PE metadata review
+- PE section review
+- imported DLL review
+- static string indicator review
 - single-file PE review
-- folder-based batch PE review
-- report export for analysis notes
+- folder-based PE batch review
+- CSV, JSON, and text report export
+- static review priority scoring for manual triage
 
 ## Safety Scope
 
@@ -31,7 +35,7 @@ It does not contain:
 - bypass instructions
 - offensive implementation details
 
-The tooling only reads PE metadata and import tables for static review.
+The tooling only reads PE files statically. It does not execute analyzed files.
 
 ## Current Features
 
@@ -56,31 +60,3 @@ Example:
 
 ```powershell
 python .\src\api_behavior_mapper.py --imports .\sample-inputs\imports.txt
-## Project Status
-
-Windows API Behavior Map is now in a foundation-complete state.
-
-The project includes:
-
-- Windows API behavior category documentation
-- API behavior mapper CLI
-- PE Static Review Scorer GUI
-- single-file PE review
-- folder-based PE batch review
-- CSV export
-- JSON export
-- scan limit support
-- static review reasoning output
-- score legend and review priority explanation
-- usage guide
-- Python requirements file
-
-Future work should focus on extending API mappings, improving report templates, and starting a broader PE static triage project.
-
-## Final Scope Note
-
-This project should be treated as a defensive PE import table review assistant.
-
-It does not execute files, classify files as malicious, or replace full malware analysis.
-
-The next project should build on this foundation by adding PE metadata review, section analysis, strings review, entropy checks, and structured triage reporting.
