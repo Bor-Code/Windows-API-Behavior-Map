@@ -1373,6 +1373,28 @@ class PEStaticReviewScorerApp:
             anchor="w",
         )
         summary_label.pack(fill=tk.X)
+        
+        score_legend_frame = tk.LabelFrame(
+            container,
+            text="Score Legend",
+            padx=8,
+            pady=6,
+        )
+        score_legend_frame.pack(fill=tk.X, pady=(0, 8))
+
+        score_legend_label = tk.Label(
+            score_legend_frame,
+            text=(
+                "0-1999: Low review priority | "
+                "2000-4999: Medium review priority | "
+                "5000-10000: High review priority\n"
+                "Score is a manual triage signal, not a malware verdict."
+            ),
+            font=("Segoe UI", 10),
+            justify=tk.LEFT,
+            anchor="w",
+        )
+        score_legend_label.pack(fill=tk.X)
 
         status_label = tk.Label(
             container,
