@@ -1,116 +1,85 @@
 ﻿# Windows API Behavior Map
 
-Windows API Behavior Map is a defensive static analysis project for reviewing Windows PE files without executing them.
+Defensive static PE review tool for mapping imported Windows APIs to behavior categories and producing a manual static review priority score.
 
-The project helps analysts inspect PE import tables, map imported Windows APIs to behavior categories, review PE metadata and static indicators, and produce a static review priority score for manual triage.
+The tool does not execute files and does not provide a malware verdict.
 
-The score is not a malware verdict.
+## Screenshots
 
-## Purpose
+### GUI Overview
 
-During PE malware analysis, imported Windows API functions and PE metadata can provide useful behavioral hints.
+![GUI Overview](docs/screenshots/1.png)
 
-This project supports:
+### Single File Review
+
+![Single File Review](docs/screenshots/2.png)
+
+### Batch Review
+
+![Batch Review](docs/screenshots/3.png)
+
+### API Category Mapping
+
+![API Category Mapping](docs/screenshots/4.png)
+
+## Features
 
 - Windows API behavior category mapping
-- PE import table interpretation
-- PE metadata review
-- PE section review
-- imported DLL review
-- static string indicator review
-- single-file PE review
-- folder-based PE batch review
+- PE metadata extraction
+- PE section summary and review notes
+- Imported DLL summary and review notes
+- Static string indicator extraction
+- Single-file PE review
+- Folder-based batch review
+- Static review priority score from `0` to `10000`
+- GUI review summary panel
+- GUI score legend panel
 - CSV, JSON, and text report export
-- static review priority scoring for manual triage
 
 ## Safety Scope
 
-This repository is a defensive learning and analysis project.
+This is a defensive static analysis project.
 
-It does not contain:
+It does not:
 
-- malware samples
-- payloads
-- exploit code
-- bypass instructions
-- offensive implementation details
+- execute analyzed files
+- classify files as malicious
+- include malware samples
+- include payloads
+- include exploit or bypass instructions
 
-The tooling only reads PE files statically. It does not execute analyzed files.
+The score is only a manual triage signal.
 
-## Current Features
-
-### API Behavior Documentation
-
-The repository includes behavior notes for:
-
-- File System API
-- Registry API
-- Process API
-- Memory API
-- Network API
-- DLL Loading API
-
-Each category explains what the APIs are generally used for, what an analyst should review, and why a single API should not be treated as proof of malicious behavior.
-
-### API Behavior Mapper CLI
-
-The CLI mapper groups a text list of imported APIs by behavior category.
-
-Example:
-
-```powershell
-python .\src\api_behavior_mapper.py --imports .\sample-inputs\imports.txt
-```
-
-### PE Static Review Scorer GUI
-
-The GUI supports:
-
-- single PE file analysis
-- folder-based PE batch analysis
-- `.exe`, `.dll`, `.scr`, and `.lnk` input handling
-- scan limit support for folder analysis
-- PE metadata extraction
-- section entropy and flag review notes
-- imported DLL summary and review notes
-- static string indicator extraction
-- static review priority scoring
-- CSV export
-- JSON export
-- text report export
-
-Run the GUI:
-
-```powershell
-python .\src\pe_suspicion_scorer_gui.py
-```
-
-## Static Review Priority
-
-The static review priority score is a manual triage aid.
-
-It should be used to decide which files deserve closer review first. It does not classify a file as malicious or benign.
-
-A higher score means the file has more static indicators that may deserve analyst attention.
-
-## Project Status
-
-Windows API Behavior Map is in a foundation-complete state.
-
-The project includes defensive documentation, a CLI API behavior mapper, a GUI PE static review tool, metadata and section review, imported DLL context, string indicator extraction, batch scan summaries, and exportable reports.
-
-Future work can focus on expanding API mappings, improving scoring weights, adding more report templates, and building a broader static triage workflow.
-
-## Requirements
-
-Install dependencies with:
+## Installation
 
 ```powershell
 pip install -r .\requirements.txt
 ```
 
-## Final Scope Note
+## Run the GUI
 
-This project should be treated as a defensive PE static review assistant.
+```powershell
+python .\src\pe_suspicion_scorer_gui.py
+```
 
-It does not execute files, classify files as malicious, or replace full malware analysis.
+## Run the CLI Mapper
+
+```powershell
+python .\src\api_behavior_mapper.py --imports .\sample-inputs\imports.txt
+```
+
+## Review Priority
+
+The score helps decide which files deserve manual review first.
+
+- `0-1999`: Low review priority
+- `2000-4999`: Medium review priority
+- `5000-10000`: High review priority
+
+A high score does not prove malicious behavior.
+
+## Project Status
+
+Foundation-complete.
+
+Future work can focus on expanding API mappings, improving scoring weights, adding more report templates, and building a broader static triage workflow.
