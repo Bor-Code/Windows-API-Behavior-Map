@@ -886,6 +886,9 @@ def analyze_path_data(
 def build_report(result: AnalysisResult) -> str:
     lines: list[str] = []
 
+    lines.append("PE Static Review Report")
+    lines.append("=======================")
+    lines.append("")
     lines.append(f"Selected File: {result.selected_path}")
     lines.append(f"Analyzed File: {result.analyzed_path}")
     lines.append(f"Static Review Score: {result.score} / {MAX_SCORE}")
@@ -922,7 +925,14 @@ def build_report(result: AnalysisResult) -> str:
     lines.append("------------")
     lines.append(f"{result.unknown_api_count} imported APIs were not mapped.")
     lines.append("Unknown APIs are listed for visibility but do not increase the score.")
-
+    lines.append("")
+    lines.append("Suggested Manual Review Checklist")
+    lines.append("---------------------------------")
+    lines.append("- Review imported API categories and unknown APIs.")
+    lines.append("- Review PE metadata, compile timestamp, subsystem, and entry point.")
+    lines.append("- Review section entropy, writable/executable flags, and unusual section names.")
+    lines.append("- Review imported DLL notes and static string indicators.")
+    lines.append("- Use the score to prioritize manual review, not to decide a final verdict.")
     lines.append("")
     lines.append("Analysis Note")
     lines.append("-------------")
@@ -1006,6 +1016,10 @@ def build_batch_report(
     lines: list[str] = []
     sorted_results = sorted(results, key=lambda result: result.score, reverse=True)
 
+    lines.append("PE Batch Static Review Report")
+    lines.append("=============================")
+    lines.append("")
+
     lines.extend(
         build_batch_summary(
             discovered_count=discovered_count,
@@ -1039,6 +1053,16 @@ def build_batch_report(
             lines.append(f"   Detected Categories: {category_text}")
             lines.append(f"   Mapped APIs: {result.mapped_api_count}")
             lines.append(f"   Unknown APIs: {result.unknown_api_count}")
+
+        lines.append("")
+        lines.append("Suggested Batch Review Checklist")
+        lines.append("--------------------------------")
+        lines.append("- Start with the highest score files first.")
+        lines.append("- Review files with high priority before low priority files.")
+        lines.append("- Compare detected categories across files in the same folder.")
+        lines.append("- Review unknown APIs and failed analyses separately.")
+        lines.append("- Use batch results for triage, not as final malware verdicts.")
+
 
     if failures:
         lines.append("")
