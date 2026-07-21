@@ -1243,6 +1243,7 @@ class PEStaticReviewScorerApp:
         self.selected_file = tk.StringVar()
         self.selected_folder = tk.StringVar()
         self.status_text = tk.StringVar(value="Ready")
+        self.summary_text = tk.StringVar(value="No analysis completed yet.")
         self.scan_limit_text = tk.StringVar(value=str(DEFAULT_SCAN_LIMIT))
 
         self.latest_results: list[AnalysisResult] = []
@@ -1356,6 +1357,23 @@ class PEStaticReviewScorerApp:
         )
         self.save_json_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        summary_frame = tk.LabelFrame(
+            container,
+            text="Review Summary",
+            padx=8,
+            pady=6,
+        )
+        summary_frame.pack(fill=tk.X, pady=(0, 8))
+
+        summary_label = tk.Label(
+            summary_frame,
+            textvariable=self.summary_text,
+            font=("Segoe UI", 10),
+            justify=tk.LEFT,
+            anchor="w",
+        )
+        summary_label.pack(fill=tk.X)
+
         status_label = tk.Label(
             container,
             textvariable=self.status_text,
@@ -1436,6 +1454,40 @@ class PEStaticReviewScorerApp:
             lambda: self.finish_analysis_success(report, results, failures),
         )
 
+    def build_gui_summary(
+        self,
+        results: list[AnalysisResult],
+        failures: list[tuple[Path, str]],
+    ) -> str:
+        if not results and not failures:
+            return "No analysis results available."
+
+        analyzed_count = len(results)
+        failed_count = len(failures)
+        highest_result = max(results, key=lambda result: result.score, default=None)
+
+        if highest_result is None:
+            highest_score_text = "Highest Score: None"
+        else:
+            highest_score_text = (
+                f"Highest Score: {highest_result.score} / {MAX_SCORE} "
+                f"({highest_result.priority})"
+            )
+
+        priority_counts = Counter(result.priority for result in results)
+        priority_text = ", ".join(
+            f"{priority}: {count}"
+            for priority, count in sorted(priority_counts.items())
+        )
+
+        if not priority_text:
+            priority_text = "None"
+
+        return (
+            f"Analyzed: {analyzed_count} | Failed: {failed_count} | "
+            f"{highest_score_text} | Priority Distribution: {priority_text}"
+        )
+
     def finish_analysis_success(
         self,
         report: str,
@@ -1444,6 +1496,7 @@ class PEStaticReviewScorerApp:
     ) -> None:
         self.latest_results = results
         self.latest_failures = failures
+        self.summary_text.set(self.build_gui_summary(results, failures))
 
         self.output.delete("1.0", tk.END)
         self.output.insert(tk.END, report)
@@ -1454,6 +1507,7 @@ class PEStaticReviewScorerApp:
 
     def finish_analysis_error(self, error_message: str) -> None:
         self.status_text.set("Analysis failed")
+        self.summary_text.set("Analysis failed. No summary available.")
         self.is_analyzing = False
         self.set_controls_enabled(True)
         messagebox.showerror("Analysis failed", error_message)
